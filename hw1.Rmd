@@ -1,0 +1,275 @@
+---
+title: "Homework #1: Supervised Learning" 
+author: "**Your Name Here**"
+date: "Due: Tue Feb 08 | 10:30 am"
+output: R6018::homework
+---
+
+**SYS 6018 | Sp 2022 | University of Virginia**
+
+------------------------------------------------------------------------
+
+```{r config, echo=FALSE}
+source(system.file("config/hw_config.R", package="R6018")) # knitr settings
+# options(dplyr.summarise.inform = FALSE)  # ignore dplyr message about grouping
+```
+
+# Required R packages and Directories
+
+::: {.solution}
+```{r packages, message=FALSE, warning=FALSE}
+data.dir = 'https://mdporter.github.io/SYS6018/data/' # data directory
+library(R6018)     # functions for SYS-6018
+library(tidyverse) # functions for data manipulation    
+```
+:::
+
+# Problem 1: Evaluating a Regression Model 
+
+## a. Create a set of functions to generate data from the following distributions:
+\begin{align*}
+X &\sim \mathcal{N}(0, 1) \\
+Y &= -1 + .5X + .2X^2 + \epsilon \\
+\epsilon &\sim \mathcal{N}(0,\, \sigma)
+\end{align*}
+
+::: {.solution}
+```{r}
+library(dplyr)
+#functions for three values
+datagenX <- function(n, sigma){
+  X <- rnorm(n, 0, 1)
+  
+}
+f <- function(x){
+  -1 + 0.5*x + 0.2*x^2 
+}
+datagenY <- function(n, sigma, X){
+  f(X) + rnorm(n, 0, sigma)
+}
+
+```
+
+:::
+
+
+## b. Simulate $n=100$ realizations from these distributions using $\sigma=3$. Produce a scatterplot and draw the true regression line $f(x) = E[Y \mid X=x]$. 
+- Use `set.seed(611)` prior to generating the data.
+
+::: {.solution}
+```{r}
+set.seed(611)
+# create data
+X = datagenX(100, 3)
+Y = datagenY(100, 3, X)
+data = tibble(X = X,
+  Y = Y)
+plot = data %>% 
+  ggplot(aes(x=X, y=Y)) + geom_point() + geom_function(fun = f, color = 'black')
+plot
+```
+
+:::
+
+## c. Fit three polynomial regression models using least squares: linear, quadratic, and cubic. Produce another scatterplot, add the fitted lines and true population line $f(x)$  using different colors, and add a legend that maps the line color to a model.
+- Note: The true model is quadratic, but we are also fitting linear (less complex) and cubic (more complex) models. 
+
+::: {.solution}
+```{r}
+#linear, quadratic, and cubic regression models
+linear_model = lm(Y ~ X, data = data)
+quadratic_model = lm(Y ~ poly(X, 2), data = data)
+cubic_model = lm(Y ~ poly(X, 3), data= data)
+
+
+#predictions
+preds1 = predict(linear_model, data = X)
+preds2 = predict(quadratic_model, data = X)
+preds3 = predict(cubic_model, data = X)
+
+poly.data = tibble(x = X, linear=preds1, quadratic=preds2, cubic=preds3) %>%  # long data
+  pivot_longer(-x, names_to="model", values_to="Y")
+
+plot + 
+  geom_smooth(method="lm", se=FALSE, aes(color="linear")) + 
+  geom_smooth(method="lm", formula="Y~poly(x,2)", se=FALSE, aes(color="quadratic")) + 
+  geom_smooth(method="lm", formula="Y~poly(x,3)", se=FALSE, aes(color="cubic")) + 
+  scale_color_discrete(name="model")
+
+
+```
+
+:::
+
+## d. Simulate a *test data* set of 10,000 observations from the same distributions. Use `set.seed(612)` prior to generating the test data.   
+- Calculate the estimated mean squared error (MSE) for each model. 
+- Are the results as expected? 
+
+::: {.solution}
+```{r}
+set.seed(612)
+# create data
+X_m = datagenX(10000, 3)
+Y_m = datagenY(10000, 3, X_m)
+preds4 = predict(linear_model, data = X_m)
+preds5 = predict(quadratic_model, data = X_m)
+preds6 = predict(cubic_model, data = X_m)
+mse1 = mean((Y_m - preds4)^2)
+mse2 = mean((Y_m - preds5)^2)
+mse3 = mean((Y_m - preds6)^2)
+#The result is unexpected. Because our model is quadratic, but the least MES is under linear model.
+```
+
+:::
+
+## e. What is the best achievable MSE? That is, what is the MSE if the true $f(x)$ was used to evaluate the test set? How close does the best method come to achieving the optimum? 
+
+::: {.solution}
+I think the best achievable MSE is the square value of sigma which is the value of the bias(symbol 'e'). So, it should be 9, because the sigma is 3.
+Our test result shows best MSE is around 9.7682, it is pretty close to 9.
+:::
+
+## f. The MSE scores obtained in part *d* came from one realization of training data. Here will we explore how much variation there is in the MSE scores by replicating the simulation many times. 
+
+- Re-run parts b. and c. (i.e., generate training data and fit models) 100 times.
+- Calculate the MSE for all simulations. 
+- Create kernel density or histogram plots of the resulting MSE values for each model. 
+- Use `set.seed(613)` prior to running the simulation and do not set the seed in any other places.
+- Use the same test data from part d. (This question is only about the variability that comes from the training data). 
+
+::: {.solution}
+```{r}
+set.seed(613)
+mse = tibble()
+linear_count = 0
+quadratic_count = 0
+cubic_count = 0
+for (index in 1:100){
+  X = datagenX(100, 3)
+  Y = datagenY(100, 3, X)
+  data = tibble(X = X,
+    Y = Y)
+  
+  #linear, quadratic, and cubic regression models
+  linear_model = lm(Y ~ X, data = data)
+  quadratic_model = lm(Y ~ poly(X, 2), data = data)
+  cubic_model = lm(Y ~ poly(X, 3), data= data)
+
+  #predictions
+  predsa = predict(linear_model, data = X_m)
+  predsb = predict(quadratic_model, data = X_m)
+  predsc = predict(cubic_model, data = X_m)
+  
+  msea = mean((Y_m - predsa)^2)
+  mseb = mean((Y_m - predsb)^2)
+  msec = mean((Y_m - predsc)^2)
+  if(min(c(msea,mseb,msec)) == msea){
+    linear_count = linear_count + 1
+  }else if(min(c(msea,mseb,msec)) == mseb){
+    quadratic_count = quadratic_count + 1
+  }else{
+    cubic_count = cubic_count + 1
+  }
+  mse = bind_rows(mse, tibble(mse=c(msea,mseb,msec)))
+}
+hist(mse$mse)
+```
+
+:::
+
+## g. Show a count of how many times each model was the best. That is, out of the 100 simulations, count how many times each model had the lowest MSE.
+
+::: {.solution}
+```{r}
+tibble(type = c("linear", " quadratic", "cubic"),counts = c(linear_count, quadratic_count, cubic_count))
+```
+:::
+
+## h. Repeat the simulation in part *f*, but use $\sigma=2$. Report the number of times each model was best (you do not need to produce any plots). Use the same `set.seed(613)` prior to running the simulation and do not set the seed in any other places.
+
+::: {.solution}
+```{r}
+set.seed(613)
+linear_count = 0
+quadratic_count = 0
+cubic_count = 0
+mse = tibble()
+for (index in 1:100){
+  X = datagenX(100, 2)
+  Y = datagenY(100, 2, X)
+  data = tibble(X = X,
+    Y = Y)
+  
+  #linear, quadratic, and cubic regression models
+  linear_model = lm(Y ~ X, data = data)
+  quadratic_model = lm(Y ~ poly(X, 2), data = data)
+  cubic_model = lm(Y ~ poly(X, 3), data= data)
+
+  #predictions
+  predsa = predict(linear_model, data = X_m)
+  predsb = predict(quadratic_model, data = X_m)
+  predsc = predict(cubic_model, data = X_m)
+  
+  msea = mean((Y_m - predsa)^2)
+  mseb = mean((Y_m - predsb)^2)
+  msec = mean((Y_m - predsc)^2)
+  if(min(c(msea,mseb,msec)) == msea){
+    linear_count = linear_count + 1
+  }else if(min(c(msea,mseb,msec)) == mseb){
+    quadratic_count = quadratic_count + 1
+  }else{
+    cubic_count = cubic_count + 1
+  }
+  mse = bind_rows(mse, tibble(mse=c(msea,mseb,msec)))
+}
+tibble(type = c("linear", " quadratic", "cubic"),counts = c(linear_count, quadratic_count, cubic_count))
+```
+
+:::
+
+
+## i. Repeat *h*, but now use $\sigma=4$ and $n=300$. 
+
+::: {.solution}
+```{r}
+set.seed(613)
+linear_count = 0
+quadratic_count = 0
+cubic_count = 0
+mse = tibble()
+for (index in 1:100){
+  X = datagenX(300, 4)
+  Y = datagenY(300, 4, X)
+  data = tibble(X = X,
+    Y = Y)
+  
+  #linear, quadratic, and cubic regression models
+  linear_model = lm(Y ~ X, data = data)
+  quadratic_model = lm(Y ~ poly(X, 2), data = data)
+  cubic_model = lm(Y ~ poly(X, 3), data= data)
+
+  #predictions
+  predsa = predict(linear_model, data = X_m)
+  predsb = predict(quadratic_model, data = X_m)
+  predsc = predict(cubic_model, data = X_m)
+  
+  msea = mean((Y_m - predsa)^2)
+  mseb = mean((Y_m - predsb)^2)
+  msec = mean((Y_m - predsc)^2)
+  if(min(c(msea,mseb,msec)) == msea){
+    linear_count = linear_count + 1
+  }else if(min(c(msea,mseb,msec)) == mseb){
+    quadratic_count = quadratic_count + 1
+  }else{
+    cubic_count = cubic_count + 1
+  }
+  mse = bind_rows(mse, tibble(mse=c(msea,mseb,msec)))
+}
+tibble(type = c("linear", " quadratic", "cubic"),counts = c(linear_count, quadratic_count, cubic_count))
+```
+
+:::
+
+
+
+

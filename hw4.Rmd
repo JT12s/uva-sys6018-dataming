@@ -1,0 +1,339 @@
+---
+title: "Homework #4: Classification" 
+author: "**Jie Tang**"
+date: "Due: Tue Mar 1 | 10:30 am"
+output: R6018::homework
+editor_options:
+  chunk_output_type: console
+---
+
+**SYS 4582/6018 | Spring 2022 | University of Virginia **
+
+*******************************************
+```{r config, echo=FALSE}
+source(system.file("config/hw_config.R", package="R6018")) # knitr settings
+# options(dplyr.summarise.inform = FALSE)  # ignore dplyr message about grouping
+```
+
+
+# Required R packages and Directories
+
+::: {.solution}
+```{r packages, message=FALSE, warning=FALSE}
+#data.dir = 'https://mdporter.github.io/SYS6018/data/' # data directory
+library(glmnet)    # for glmnet() functions
+library(yardstick) # for evaluation metrics
+library(R6018)     # functions for SYS-6018
+library(tidyverse) # functions for data manipulation   
+```
+:::
+
+
+# Crime Linkage
+
+Crime linkage attempts to determine if two or more unsolved crimes share a common offender. *Pairwise* crime linkage is the more simple task of deciding if two crimes share a common offender; it can be considered a binary classification problem. The linkage training data has 8 evidence variables that measure the similarity between a pair of crimes:
+
+- `spatial` is the spatial distance between the crimes
+- `temporal` is the fractional time (in days) between the crimes
+- `tod` and `dow` are the differences in time of day and day of week between the crimes
+- `LOC`, `POA,` and `MOA` are binary with a 1 corresponding to a match (type of property, point of entry, method of entry)
+- `TIMERANGE` is the time between the earliest and latest possible times the crime could have occurred (because the victim was away from the house during the crime).
+- The response variable indicates if the crimes are linked ($y=1$) or unlinked ($y=0$).
+
+
+These problems use the [linkage-train](https://mdporter.github.io/SYS6018/data/linkage_train.csv) and [linkage-test](https://mdporter.github.io/SYS6018/data/linkage_test.csv) datasets (click on links for data). 
+
+
+
+::: {.solution}
+```{r}
+#setwd("C:/Users/tjj/Desktop/uva/Data mining")
+data_train = read.csv('linkage_train.csv')
+data_test = read.csv('linkage_test.csv')
+head(data_train)
+```
+
+:::
+
+
+
+
+# Problem 1: Penalized Regression for Crime Linkage
+
+## a. Fit a penalized *linear regression* model to predict linkage. Use a lasso, ridge, or elasticnet penalty (your choice). 
+- Report the value of $\alpha$ used (if elasticnet)
+- Report the value of $\lambda$ used
+- Report the estimated coefficients
+
+::: {.solution}
+```{r}
+X = makeX(select(data_train, spatial, temporal, tod, dow, LOC, POA, MOA, TIMERANGE))
+Y = data_train$y
+#linear regression
+ridge_cv <- cv.glmnet(X, Y, alpha = 0, 
+                      standardize = TRUE, nfolds = 10)
+
+
+lambda_cv <- ridge_cv$lambda.min
+  
+# Fit final model, get its sum of squared
+# residuals and multiple R-squared
+model_cv <- glmnet(X, Y, alpha = 0, lambda = lambda_cv,
+                   standardize = TRUE)
+as.matrix(coef(model_cv))
+betas <- as.vector((as.matrix(coef(model_cv))[-1, ]))
+```
+
+:::
+
+
+## b. Fit a penalized *logistic regression* model to predict linkage. Use a lasso, ridge, or elasticnet penalty (your choice).  
+- Report the value of $\alpha$ used (if elasticnet)
+- Report the value of $\lambda$ used
+- Report the estimated coefficients
+
+::: {.solution}
+```{r}
+#linear regression
+log_ridge_cv <- cv.glmnet(X, Y, alpha = 0, 
+                      standardize = TRUE, nfolds = 10, family="binomial")
+
+
+lambda_cv <- log_ridge_cv$lambda.min
+  
+# Fit final model, get its sum of squared
+# residuals and multiple R-squared
+log_model_cv <- glmnet(X, Y, alpha = 0, lambda = lambda_cv,
+                   standardize = TRUE, family="binomial")
+as.matrix(coef(log_model_cv))
+betas <- as.vector((as.matrix(coef(log_model_cv))[-1, ]))
+```
+
+:::
+
+
+## c. Produce one plot that has the ROC curves, using the *training data*, for both models (from part a and b). Use color and/or linetype to distinguish between models and include a legend.    
+
+::: {.solution}
+```{r}
+linear_p.hat = predict(model_cv, X, type = 'response')
+linear_gamma = predict(model_cv, X, type = 'link')
+log_p.hat = predict(log_model_cv, X, type='response') 
+log_gamma = predict(log_model_cv, X, type='link') 
+
+
+perf = tibble(truth = Y, linear_gamma, linear_p.hat) %>% 
+  #- group_by() + summarize() in case of ties
+  group_by(linear_gamma, linear_p.hat) %>%     
+  summarize(n=n(), n.1=sum(truth), n.0=n-sum(truth)) %>% ungroup() %>% 
+  #- calculate metrics
+  arrange(linear_gamma) %>% 
+  mutate(FN = cumsum(n.1),    # false negatives 
+         TN = cumsum(n.0),    # true negatives
+         TP = sum(n.1) - FN,  # true positives
+         FP = sum(n.0) - TN,  # false positives
+         N = cumsum(n),       # number of cases predicted to be 1
+         TPR = TP/sum(n.1), FPR = FP/sum(n.0)) %>% 
+  #- only keep relevant metrics
+  select(-n, -n.1, -n.0, linear_gamma, linear_p.hat) 
+
+
+log_perf = tibble(truth = Y, log_gamma, log_p.hat) %>% 
+  #- group_by() + summarize() in case of ties
+  group_by(log_gamma, log_p.hat) %>%     
+  summarize(n=n(), n.1=sum(truth), n.0=n-sum(truth)) %>% ungroup() %>% 
+  #- calculate metrics
+  arrange(log_gamma) %>% 
+  mutate(log_FN = cumsum(n.1),    # false negatives 
+         log_TN = cumsum(n.0),    # true negatives
+         log_TP = sum(n.1) - log_FN,  # true positives
+         log_FP = sum(n.0) - log_TN,  # false positives
+         log_N = cumsum(n),       # number of cases predicted to be 1
+         log_TPR = log_TP/sum(n.1), log_FPR = log_FP/sum(n.0)) %>% 
+  #- only keep relevant metrics
+  select(-n, -n.1, -n.0, log_gamma, log_p.hat)
+
+
+#: Make ROC curve
+perf %>% ggplot(aes(FPR, TPR)) + geom_path(aes(color='linear')) + 
+  geom_path(data = log_perf, aes(log_FPR, log_TPR, color='log'), color='blue') + 
+  geom_segment(x=0, xend=1, y=0, yend=1, lty=3) + 
+  labs(x='FPR (1-specificity)', y='TPR (sensitivity)') + 
+  geom_segment(x=0, xend=1, y=0, yend=1, lty=3, color='grey50') + 
+  scale_x_continuous(breaks = seq(0, 1, by=.20)) + 
+  scale_y_continuous(breaks = seq(0, 1, by=.20)) + 
+  scale_colour_manual(name='Curve',
+                     breaks=c('log', 'linear'),
+                     values = c('log'="blue", 'linear'="grey50")) +
+  ggtitle("ROC Curve")
+
+
+
+
+```
+```{r}
+#: ROC plots
+library(yardstick)
+test = tibble(truth = factor(Y, levels=c(1,0)), log_gamma[,1])
+ROC = tibble(truth = factor(Y, levels=c(1,0)), g=log_gamma[,1]) %>%
+  yardstick::roc_curve(truth, g)
+autoplot(ROC) # autoplot() method
+
+```
+
+:::
+
+
+## d. Recreate the ROC curve from the penalized logistic regression model using repeated hold-out data. The following steps will guide you:
+- Fix $\alpha=.75$ 
+- Run the following steps 25 times:
+i. Hold out 500 observations
+ii. Use the remaining observations to estimate $\lambda$ using 10-fold CV
+iii. Predict the probability of linkage for the 500 hold-out observations
+iv. Store the predictions and hold-out labels
+- Combine the results and produce the hold-out based ROC curve
+- Note: by estimating $\lambda$ each iteration, we are incorporating the uncertainty present in estimating that tuning parameter. 
+    
+::: {.solution}
+```{r}
+alpha = 0.75
+holdout_X = X[1:500,]
+holdout_Y = Y[1:500]
+remaining_X = X[501:nrow(X),]
+remaining_Y = Y[501:nrow(X)]
+total_gamma = numeric()
+for(i in 1:25){
+  # 10-foldcross-validation
+  glmnet_cv = cv.glmnet(remaining_X, remaining_Y, alpha=alpha, nfolds = 10) 
+  #get min lambda
+  lambda = glmnet_cv$lambda.min
+  model = glmnet(remaining_X, remaining_Y, alpha=alpha, lambda = lambda)
+  temp_gamma = predict(model, holdout_X, type='link') 
+  total_gamma <- c(total_gamma, temp_gamma)
+}
+#I used a list of list to store the 25 times predictions and gamma.
+#I think we need to accumulate TP and FP to calculate TPR and FPR and draw ROC cruve
+cur_Y = holdout_Y
+for (i in 1:24) {holdout_Y <- c(holdout_Y, cur_Y)}
+ROC = tibble(truth = factor(cur_Y, levels=c(1,0)), g=temp_gamma[,1]) %>%
+  yardstick::roc_curve(truth, g)
+autoplot(ROC) # autoplot() method
+```
+
+:::
+
+
+
+
+## e. Contest Part 1: Predict the estimated *probability* of linkage for the test data (using any model). 
+- Submit a .csv file (ensure comma separated format) named `lastname_firstname_1.csv` that includes the column named **p** that is your estimated posterior probability. We will use automated evaluation, so the format must be exact. 
+- You are free to use any tuning parameters
+- You are free to use any data transformation or feature engineering
+- You will receive credit for a proper submission; the top five scores will receive 2 bonus points.     
+- Your probabilities will be evaluated with respect to the mean negative Bernoulli log-likelihood (known as the average *log-loss* metric)
+$$ 
+L = - \frac{1}{M} \sum_{i=1}^m [y_i \log \, \hat{p}_i + (1 - y_i) \log \, (1 - \hat{p}_i)]
+$$
+where $M$ is the number of test observations, $\hat{p}_i$ is the prediction for the $i$th test observation, and $y_i \in \{0,1\}$ are the true test set labels. 
+
+::: {.solution}
+```{r}
+# calculate correlation matrix, remove highly relataed variables
+correlationMatrix <- cor(data_train[,1:8])
+print(correlationMatrix)
+# find attributes that are highly corrected (ideally >0.75)
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.5)
+# print indexes of highly correlated attributes
+print(highlyCorrelated)
+#Seems like they are all low.
+
+#try Penalized logistic regression 
+min_lost = 10000
+best_alpha = 0
+best_lambda
+for(n in 0:100){
+  temp_glmnet = cv.glmnet(X,Y, alpha=n/100, folds=10) 
+  
+  p.hat = predict(temp_glmnet, X, s = 'lambda.min', type='response')  
+  #: Log Loss Metric
+  temp_lost = yardstick::mn_log_loss_vec(factor(Y, c(1,0)), p.hat[,1])
+  if(min_lost > temp_lost ){
+    min_lost <- temp_lost
+    best_alpha = n/100
+    best_lambda = temp_glmnet$lambda.min
+  }
+  #tibble(truth = factor(Y, levels=c(1,0)), p = p.hat[,1]) %>% yardstick::mn_log_loss(truth, p)
+}
+#
+print("Best alpha is: ")
+print(best_alpha)
+
+```
+```{r}
+#We use this best_alpha to do the prediction of test data.
+best_glmnet = glmnet(X, Y, alpha = best_alpha, lambda=best_lambda)
+yhat2 = predict(best_glmnet, as.matrix(data_test), s = 'lambda.min')
+colnames(yhat2) = c("p") 
+write.csv(yhat2,"Tang_Jie_1.csv")
+```
+
+:::
+
+
+## f. Contest Part 2: Predict the linkages for the test data (using any model). 
+- Submit a .csv file (ensure comma separated format) named `lastname_firstname_2.csv` that includes the column named **linkage** that takes the value of 1 for linkages and 0 for unlinked pairs. We will use automated evaluation, so the format must be exact. 
+- You are free to use any tuning parameters.
+- You are free to use any data transformation or feature engineering.
+- Your labels will be evaluated based on total cost, where cost is equal to `1*FP + 8*FN`. This implies that False Negatives (FN) are 8 times as costly as False Positives (FP)    
+- You will receive credit for a proper submission; the top five scores will receive 2 bonus points. Note: you only will get bonus credit for one of the two contests. 
+
+::: {.solution}
+```{r}
+#try Penalized logistic regression 
+min_lost = 1000000
+best_alpha = 0
+best_lambda
+for(n in 0:5){
+  temp_glmnet = cv.glmnet(X,Y, alpha=n/5, folds=10) 
+  
+  p.hat = predict(temp_glmnet, X, s = 'lambda.min', type='response')  
+  G.hat = ifelse(p.hat >= 0.05, 1, 0)
+  #print(G.hat[0:5])
+  #print(Y[0:5])
+  FP = 0
+  FN = 0
+  for(i in 1:nrow(G.hat)){
+    if(G.hat == 1 && Y[i] == 0){
+      FP = FP + 1
+    }
+    else if(G.hat == 0 && Y[i] ==1){
+      FN = FN + 1
+    }
+  }
+  temp_lost = FP + 8 * FN
+  #print(temp_lost)
+  if(min_lost > temp_lost ){
+    min_lost <- temp_lost
+    best_alpha = n/5
+    best_lambda = temp_glmnet$lambda.min
+  }
+}
+#
+print("Best alpha is: ")
+print(best_alpha)
+```
+
+```{r}
+best_glmnet = glmnet(X, Y, alpha = best_alpha, lambda=best_lambda)
+yhat2 = predict(best_glmnet, as.matrix(data_test), s = 'lambda.min')
+G.hat = ifelse(p.hat >= 0, 1, 0)
+colnames(G.hat) = c("linkage") 
+write.csv(G.hat,"Tang_Jie_2.csv")
+```
+:::
+
+
+
+
+
+

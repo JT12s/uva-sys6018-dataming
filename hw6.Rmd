@@ -1,0 +1,263 @@
+---
+title: "Homework #6: Trees and Forests" 
+author: "**Jie Tang**"
+date: "Due: Tue Apr 05 | 10:30 am"
+output: R6018::homework
+editor_options:
+  chunk_output_type: console
+---
+
+**SYS 4582/6018 | Spring 2022 | University of Virginia **
+
+*******************************************
+```{r config, echo=FALSE}
+source(system.file("config/hw_config.R", package="R6018")) # knitr settings
+# options(dplyr.summarise.inform = FALSE)  # ignore dplyr message about grouping
+```
+
+
+
+# Required R packages and Directories
+
+::: {.solution}
+```{r packages, message=FALSE, warning=FALSE}
+data.dir = 'https://mdporter.github.io/SYS6018/data/' # data directory
+library(R6018)     # functions for SYS-6018
+library(tidyverse) # functions for data manipulation  
+library(randomForest)
+```
+:::
+
+# Problem 1: Tree Splitting for classification
+
+Consider the Gini index, classification error, and entropy impurity measures in a simple classification setting with two classes. 
+
+Create a single plot that displays each of these quantities as a function of $p_m$, the estimated probability of an observation in node $m$ being from class 1. The x-axis should display $p_m$, ranging from 0 to 1, and the y-axis should display the value of the Gini index, classification error, and entropy.
+
+::: {.solution}
+
+```{r}
+p <- seq(0, 1, 0.001)
+gini.index <- 2 * p * (1 - p)
+class.error <- 1 - pmax(p, 1 - p)
+cross.entropy <- - (p * log(p) + (1 - p) * log(1 - p))
+matplot(p, cbind(gini.index, class.error, cross.entropy), col = c("red", "green", "blue"))
+```
+
+
+:::
+
+
+# Problem 2: Combining bootstrap estimates
+
+```{r, echo=FALSE}
+p_red = c(0.2, 0.25, 0.3, 0.4, 0.4, 0.45, 0.7, 0.85, 0.9, 0.9)
+```
+
+Suppose we produce ten bootstrapped samples from a data set containing red and green classes. We then apply a classification tree to each bootstrapped sample and, for a specific value of $X$, produce the following 10 estimates of $\Pr(\text{Class is Red} \mid X)$: $\{`r stringr::str_c(p_red, sep=", ")`\}$.
+
+## a. ISLR 8.2 describes the *majority vote* approach for making a hard classification from a set of bagged classifiers. What is the final classification for this example using majority voting?
+
+::: {.solution}
+
+Majority vote: the overall prediction is the most commonly occurring class among the B predictions.
+If we set our threshold to 0.5 when we classify.
+Our possibility results from ten bootstrapped samples have six results lower than 0.5 and four results bigger than 0.5. So, by majority vote, the final classification should be Class is Green.  
+:::
+
+## b. An alternative is to base the final classification on the average probability. What is the final classification for this example using average probability?
+
+::: {.solution}
+
+```{r}
+#Calculate average possibility
+avg = (0.2+0.25+0.3+0.4+0.4+0.45+0.7+0.85+0.9+0.9) / 10
+avg
+```
+The average of probability is 0.535. If our threshold is 0.5, the final classification is Class is Red
+:::
+
+
+## c. Suppose the cost of mis-classifying a Red observation (as Green) is twice as costly as mis-classifying a Green observation (as Red). How would you modify both approaches to make better final classifications under these unequal costs? Report the final classifications. 
+
+::: {.solution}
+
+Misclassification Error: Qm = 1 − maxk p¯m(k)
+
+Misclassification costs can often be dealt with through class weights, the same way as unbalanced classes can. This means that if the misclassification cost is higher for a class, elements of such a class will be more influent when making predictions. Gini Coefficient will be maximum when the weighted sum of the elements of each class is equal
+
+We should update our threshold to unequal misclassifcation cost. For Pr(Class is Red∣X, the X should over 0.67 to ensure the cost is balanced.
+For majority vote, final classfication should be Green.
+For average, final classfication should be Green
+:::
+
+
+# Problem 3: Random Forest Tuning
+
+Random forest has several tuning parameters that you will explore in this problem. We will use the `Boston` housing data from the `MASS` R package (See the ISLR Lab in section 8.3.3 for example code).
+
+- Note: remember that `MASS` can mask the `dplyr::select()` function.
+
+## a. List all of the random forest tuning parameters in the `randomForest::randomForest()` function. Note any tuning parameters that are specific to classification or regression problems. Indicate the tuning parameters you think will be most important to optimize? 
+
+::: {.solution}
+randomForest::randomForest() tuning parameters:
+ntree: Number of trees to grow. This should not be set to too small a number, to ensure that every input row gets predicted at least a few times.
+
+mtry: Number of variables randomly sampled as candidates at each split. Note that the default values are different for classification (sqrt(p) where p is number of variables in x) and regression (p/3)
+
+weights
+A vector of length same as y that are positive weights used only in sampling data to grow each tree (not used in any other calculation)
+
+replace
+Should sampling of cases be done with or without replacement?
+
+classwt
+Priors of the classes. Need not add up to one. Ignored for regression.
+
+cutoff
+(Classification only) A vector of length equal to number of classes. The `winning' class for an observation is the one with the maximum ratio of proportion of votes to cutoff. Default is 1/k where k is the number of classes (i.e., majority vote wins).
+
+strata
+A (factor) variable that is used for stratified sampling.
+
+sampsize
+Size(s) of sample to draw. For classification, if sampsize is a vector of the length the number of strata, then sampling is stratified by strata, and the elements of sampsize indicate the numbers to be drawn from the strata.
+
+nodesize
+Minimum size of terminal nodes. Setting this number larger causes smaller trees to be grown (and thus take less time). Note that the default values are different for classification (1) and regression (5).
+
+maxnodes
+Maximum number of terminal nodes trees in the forest can have. If not given, trees are grown to the maximum possible (subject to limits by nodesize). If set larger than maximum possible, a warning is issued.
+
+importance
+Should importance of predictors be assessed?
+
+localImp
+Should casewise importance measure be computed? (Setting this to TRUE will override importance.)
+
+nPerm
+Number of times the OOB data are permuted per tree for assessing variable importance. Number larger than 1 gives slightly more stable estimate, but not very effective. Currently only implemented for regression.
+
+proximity
+Should proximity measure among the rows be calculated?
+
+oob.prox
+Should proximity be calculated only on ``out-of-bag'' data?
+
+norm.votes
+If TRUE (default), the final result of votes are expressed as fractions. If FALSE, raw vote counts are returned (useful for combining results from different runs). Ignored for regression.
+
+do.trace
+If set to TRUE, give a more verbose output as randomForest is run. If set to some integer, then running output is printed for every do.trace trees.
+
+keep.forest
+If set to FALSE, the forest will not be retained in the output object. If xtest is given, defaults to FALSE.
+
+corr.bias
+perform bias correction for regression? Note: Experimental. Use at your own risk.
+
+keep.inbag
+Should an n by ntree matrix be returned that keeps track of which samples are ``in-bag'' in which trees (but not how many times, if sampling with replacement)
+
+I think the most important tuning parameters are nodesize and mtry. 
+
+:::
+
+
+
+## b. Use a random forest model to predict `medv`, the median value of owner-occupied homes (in $1000s). Use the default parameters and report the 10-fold cross-validation MSE. 
+
+::: {.solution}
+
+```{r}
+library(MASS)
+library(randomForest)
+data(Boston, package="MASS")
+head(Boston)
+#random forest model with default parameter
+set.seed(212)
+
+
+#- mean squared error function
+mse <- function(yhat, y){
+  yhat = as.matrix(yhat)
+  apply(yhat, 2, function(f) mean((f-y)^2))
+}
+
+#cross validation mse
+nfolds = 10 # number of folds
+n = nrow(Boston) # number of observations
+folds = sample(rep(1:nfolds, length=n))
+
+perf = tibble()
+for(k in 1:nfolds){
+  #-- Set training/test data for fold i
+  test = which(folds == k) # indices of holdout/validation data
+  train = which(folds != k) # indices of fitting/training data
+  n.val = length(test) # number of observations in validation
+  
+  test_data = Boston[-train,]
+  #X.test = test_data %>% select(-medv)
+  Y.test = test_data %>% pull(medv)
+  
+  rf = randomForest(medv~.,data=Boston[train,])
+  #print(rf)
+  #varImpPlot(rf)
+  test.mse= mse(predict(rf,test_data[,c(1:13)]), Y.test)
+  eval = tibble(fold = k, mse=test.mse)
+  perf = bind_rows(perf, eval)
+}
+perf
+mean(perf$mse)
+```
+
+
+:::
+
+
+## c. Now we will vary the tuning parameters of `mtry` and `ntree` to see what effect they have on performance. 
+- Use a range of reasonable `mtry` and `ntree` values.
+- Use 5 times repeated out-of-bag (OOB) to assess performance. That is, run random forest 5 times for each tuning set, calculate the OOB MSE each time and use the average for the MSE associated with the tuning parameters.
+- Use a plot to show the average MSE as a function of `mtry` and `ntree`.
+- Report the best tuning parameter combination. 
+- Note: random forest is a stochastic model; it will be different every time it runs. Set the random seed to control the uncertainty associated with the stochasticity. 
+- Hint: If you use the `randomForest` package, the `mse` element in the output is a vector of OOB MSE values for `1:ntree` trees in the forest. This means that you can set `ntree` to some maximum value and get the MSE for any number of trees up to `ntree`. 
+
+
+::: {.solution}
+
+```{r}
+#Number of bootstrap sample 
+B = 5
+n = nrow(Boston)     # number of observations
+
+#We have 13 vairables, set to c(4, 8, 12)
+mtrys = c(4,6,8,10,12)
+#506 obs in Boston dataset, max ntree is 500. So up tp 500. set ntree to 500  
+ntrees = 500
+#- fit bootstrap trees
+set.seed(10)
+perf2 = tibble()
+rf_list = tibble()
+for(m in mtrys){#mtry
+  total_mse = 0
+  for(b in 1:B){ #Bootstrap
+    boot.ind = sample.int(506,replace=TRUE)      # bootstrap indices
+    rf = randomForest(medv~.,data=Boston[boot.ind,], mtry=m, ntree=ntrees)
+    plot(1:500,rf$mse,col="red",type="l",xlab = "Number of Trees",ylab = "Test MSE",ylim = c(3,15))
+    temp = mean(rf$mse)
+    total_mse = total_mse + temp
+  }
+  eval = tibble(mtry=m, mse=total_mse/5)
+  perf2 = bind_rows(perf2, eval)
+  
+}
+
+perf2
+perf2[which.min(perf2$mse),]
+#From the result I got, the bset tuning parameters are mtry=12 and ntree = 500.
+```
+
+
+:::

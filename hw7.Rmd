@@ -1,0 +1,260 @@
+---
+title: "Homework #7: Tree Ensembles" 
+author: "**Jie Tang**"
+date: "Due: Tue Apr 19 | 10:30 am"
+output: R6018::homework
+---
+
+**SYS 4582/6018 | Spring 2022 | University of Virginia **
+
+*******************************************
+```{r config, echo=FALSE}
+source(system.file("config/hw_config.R", package="R6018")) # knitr settings
+# options(dplyr.summarise.inform = FALSE)  # ignore dplyr message about grouping
+```
+
+
+
+# Problem 1: Tree Ensembles
+
+Implement Random Forest and Boosted Trees on the project training data. Use cross-validation to estimate the tuning parameters and predictive performance.
+
+- Report the optimal tuning parameters.
+- Report cross-validation performance for your final model using the metrics described in the project.
+- Submit your code just for these two models - don't submit your entire project.
+- This will give you a head start on part 2 of the project.
+
+::: {.solution}
+
+```{r}
+library(randomForest)
+library(tidyverse)
+library(gbm)
+#Load our csv data file
+data = read.csv('HaitiTraining.csv')
+is.factor(data$Class)
+data$Class <- as.factor(ifelse(data$Class == "Blue Tarp", 1, 0))
+is.factor(data$Class)
+
+
+#- Get K-fold partition (so consistent to all models)
+set.seed(1) # set seed for replicability
+n.folds = 10 # number of folds for cross-validation
+fold = sample(rep(1:n.folds, length=nrow(data)))
+
+```
+
+```{r}
+
+#-- Settings
+#Tuning mtry
+ntree_max = 200             # maximum number of trees in forest
+mtry_seq = seq(1, 3, by=1)  # grid of tuning parameters
+#Because we only have 3 variables, I will just use mtry = 3
+#mtry = 3
+
+
+perf = tibble()
+for(k in 1:10) {
+  #-- Set training/test data for fold k
+  test = which(fold == k) # indices of holdout/validation data
+  train = which(fold != k) # indices of fitting/training data
+  n.val = length(test) # number of observations in validation
+  
+  for(i in 1:length(mtry_seq)) {
+    set.seed(1)                     
+    rf = randomForest(Class~., data=data[train,], 
+                      mtry=mtry_seq[i], ntree=ntree_max)
+    
+    #: estimate probability in hold out set
+    p_hat = predict(rf, data[test,], type = "prob")
+    #: evaluate performance
+    log_loss = yardstick::mn_log_loss_vec(data$Class[test], as.numeric(p_hat[,2]), event_level = "second")
+    AUROC = yardstick::roc_auc_vec(data$Class[test], as.numeric(p_hat[,2]), event_level = "second")
+
+    out = tibble(log_loss, AUROC) %>% 
+      mutate(fold = k, tuning = i, n.val, mtry = mtry_seq[i], 
+           ntree = ntree_max, 
+           errorrate = rf$err.rate[ntree_max])
+    
+    perf = bind_rows(perf, out)
+  }
+}
+```
+
+```{r}
+perf
+(avg_perf = perf %>%
+group_by(tuning) %>%
+summarize(
+avg_log_loss = mean(log_loss),
+avg_AUROC = mean(AUROC),
+sd_log_loss = sd(log_loss),
+sd_AUROC = sd(AUROC)
+) %>%
+arrange(avg_log_loss, -avg_AUROC))
+
+#So, mtry = 1 has the least log_loss and largest avg_AUROC.
+
+pred = numeric(nrow(data))
+for(v in unique(fold)) {
+  # set fit/eval split
+  ind_fit = which(fold != v)
+  ind_eval = which(fold == v)
+  fit = randomForest(Class~., data[ind_fit,], mtry=1, ntree=ntree_max)
+  # estimate probability in hold out set
+  pred[ind_eval] = predict(fit, data[ind_eval,], type = "prob")[,2]
+}
+eval_data = tibble(
+  y = data$Class,
+  pred = pred,
+  yhat = ifelse(pred > .50, 1, 0) # hard classification
+)
+# ROC curves
+ROC_data = yardstick::roc_curve(eval_data,
+  truth = y,
+  estimate = pred,
+  event_level = "second")
+autoplot(ROC_data)
+randomforest_AUROC = yardstick::roc_auc_vec(data$Class, as.numeric(pred), event_level = "second")
+
+
+#parameter importance shows the importance of predictors
+fit$importance
+#We can see 'Blue' variable has the greatest importance. Professor also mentioned this in class that we can only see whether Blue is the greatest or not.
+```
+
+```{r}
+#Like part 1 review, take the cost of FN 5 times worse than FP.
+
+#-- Make function to calculate confusion matrix metrics
+get_conf <- function(thres, y, p_hat) {
+yhat = ifelse(p_hat >= thres, 1L, 0L)
+tibble(threshold = thres,
+TP = sum(y == 1 & yhat == 1),
+FP = sum(y == 0 & yhat == 1),
+FN = sum(y == 1 & yhat == 0),
+TN = sum(y == 0 & yhat == 0)
+)
+}
+#-- Calculate for range of thresholds
+thres = seq(.05, .20, length=50) # set of thresholds
+perf_thres = map_df(thres, ~get_conf(., y=data$Class, p_hat = pred)) %>% mutate(cost = FN*5 + FP*1)
+
+res <- perf_thres %>%
+slice_min(cost) %>% # choose threshold with minimum costs
+transmute(threshold,
+Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res
+#Met two same min threshold problem
+if(length(res) != 1){
+  res <- res[1,]
+}
+rf_threshold = res$threshold	
+rf_acc = res$Accuracy
+rf_tpr = res$TPR
+rf_fpr = res$FPR
+rf_pre = res$PRE
+```
+
+
+
+```{r}
+#Tuning n.tree, this is integer specifying the total number of trees to fit. This is equivalent to the number of iterations and the number of basis functions in the additive expansion.
+trees =seq(500, 2000, by=500)
+
+perf2 = tibble()
+
+for(k in 1:10) {
+  #-- Set training/test data for fold k
+  test = which(fold == k) # indices of holdout/validation data
+  train = which(fold != k) # indices of fitting/training data
+  n.val = length(test) # number of observations in validation
+  
+  for(i in trees) {
+    set.seed(1)                     
+    gbm1 <- gbm(Class ~ ., data = data[train, ], distribution = "gaussian", cv.folds = 5, n.trees = i, shrinkage = 0.1, interaction.depth = 1)
+    
+    best.iter <- gbm.perf(gbm1, method = "cv")
+    p_hat = predict(gbm1, data[test,], n.trees = best.iter)
+    #: evaluate performance
+    log_loss = yardstick::mn_log_loss_vec(data$Class[test], as.numeric(p_hat[]), event_level = "second")
+    AUROC = yardstick::roc_auc_vec(data$Class[test], as.numeric(p_hat[]), event_level = "second")
+
+    out = tibble(log_loss, AUROC) %>% 
+      mutate(fold = k, tuning = i, n.val)
+    perf2 = bind_rows(perf2, out)
+  }
+}
+perf2
+```
+
+```{r}
+(avg_perf = perf2 %>%
+group_by(tuning) %>%
+summarize(
+avg_log_loss = mean(log_loss),
+avg_AUROC = mean(AUROC),
+sd_log_loss = sd(log_loss),
+sd_AUROC = sd(AUROC)
+) %>%
+arrange(avg_log_loss, -avg_AUROC))
+
+
+#We can see that n.trees = 2000 has the best performance
+pred2 = numeric(nrow(data))
+for(v in unique(fold)) {
+  # set fit/eval split
+  ind_fit = which(fold != v)
+  ind_eval = which(fold == v)
+  fit2 <- gbm(Class ~ ., data = data[ind_fit, ],distribution = "gaussian", cv.folds = 5, n.trees = 2000, shrinkage = 0.1, interaction.depth = 1)
+  best.iter <- gbm.perf(fit2, method = "cv")
+  # estimate probability in hold out set
+  pred2[ind_eval] = predict(fit2, data[ind_eval,], n.trees = best.iter)
+}
+eval_data = tibble(
+  y = data$Class,
+  pred2 = pred2,
+)
+
+# ROC curves
+ROC_data = yardstick::roc_curve(eval_data,
+  truth = y,
+  estimate = pred2,
+  event_level = "second")
+autoplot(ROC_data)
+bt_AUROC = yardstick::roc_auc_vec(data$Class, as.numeric(pred2), event_level = "second")
+```
+
+```{r}
+#For threshold, the outcome of gbm is in a range of 1 to 1.5. So I pick value in between this range.
+thres2 = seq(1.0, 1.50, length=50)
+perf_thres2 = map_df(thres2, ~get_conf(., y=data$Class, p_hat = pred2)) %>% mutate(cost = FN*5 + FP*1)
+
+res2 <- perf_thres2 %>%
+slice_min(cost) %>% # choose threshold with minimum costs
+transmute(threshold,
+Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res2
+bt_threshold = res2$threshold	
+bt_acc = res2$Accuracy
+bt_tpr = res2$TPR
+bt_fpr = res2$FPR
+bt_pre = res2$PRE
+
+```
+
+
+```{r}
+library(knitr)
+performance_table = tibble(Model=c("Random Forest", "Boosted Tree"), Tuning=c("mtry=1", "n.trees=2000"), AUROC=c(randomforest_AUROC, bt_AUROC), Threshold=c(rf_threshold, bt_threshold), Accuracy=c(rf_acc, bt_acc), TPR=c(rf_tpr,bt_tpr), FPR=c(rf_fpr, bt_fpr), Precision=c(rf_pre, bt_pre))
+knitr::kable(performance_table, "pipe")
+```
+
+:::
