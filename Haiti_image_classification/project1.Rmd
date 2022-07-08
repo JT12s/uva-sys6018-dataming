@@ -1,0 +1,443 @@
+---
+title: "Disaster Relief Project"
+author: "Jie Tang"
+date: "`r format(Sys.Date(), '%b %d, %Y')`"
+output:
+  html_document:
+    number_sections: true    
+    toc: true
+    toc_float: true
+    theme: cosmo
+    highlight: espresso    
+# You can make the format personal - this will get you started:  
+# https://bookdown.org/yihui/rmarkdown/html-document.html#appearance_and_style    
+---
+
+<!--- Below are global settings for knitr. You can override any of them by adding the changes to individual chunks --->
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(
+  error=TRUE,          # Keep compiling upon error
+  collapse=FALSE,      # collapse by default
+  echo=TRUE,           # echo code by default
+  comment = "#>",      # change comment character
+  fig.width = 5.5,     # set figure width
+  fig.align = "center",# set figure position
+  out.width = "49%",   # set width of displayed images
+  warning=TRUE,        # show R warnings
+  message=TRUE         # show R messages
+)
+```
+
+<!--- Change font sizes (or other css modifications) --->
+<style>
+h1.title {
+  font-size: 2.2em; /* Title font size */
+}
+h1 {
+  font-size: 2em;   /* Header 1 font size */
+}
+h2 {
+  font-size: 1.5em;
+}
+h3 { 
+  font-size: 1.2em;
+}
+pre {
+  font-size: 0.8em;  /* Code and R output font size */
+}
+</style>
+
+
+
+**SYS 6018 | Spring 2022 | University of Virginia **
+
+*******************************************
+
+# Introduction 
+
+Our project is aiming to predict the classification of imagery data in Haiti after the earthquake happened in 2010. Because of this huge earthquake, people who living in Haiti were displaced. Now we have ability to obtain those imagery data by  a team from the Rochester Institute of Technology flew an aircraft to collect high resolution geo-referenced imagery. To find the right place from those images more effectively, we wish to design models for us to help us do this thing and that is our motivation. 
+
+# Training Data / EDA
+
+Load data, explore data, etc. 
+
+```{r load-packages, warning=FALSE, message=FALSE}
+# Load Required Packages
+library(tidyverse)
+library(ggplot2)
+library(glmnet)
+library(broom)
+library(FNN)
+library(e1071)
+library(yardstick)
+library(caret)
+#Load our csv data file
+data = read.csv('HaitiTraining.csv')
+
+#Check the columns of Haiti data
+head(data)
+
+#Check the summary of our data
+#summary(data$Class)
+#Hmisc::describe(data$Class)
+Hmisc::describe(data)
+```
+We have 63241 data and no missing one. So we do not need to fill in or replace anything. Meanwhile, except the "Class" variable, all other predictors are numeric which means we do not need to use encoding to category variable. 
+There are in total five classes of 'class' which are Blue Tarp, Rooftop, Soil, Various Non-Trap and Vegetation. Vegetation has the most proportion and Blue Tarp has the least.
+
+And the range for color should be inside 0 to 255.
+
+Some preprocessing: Change the multi-class prediction to binary prediction. Most of our models only fit with binary classifcation. And in our case, I consider the Blu Tarp is the most significant place to clarify. Becuase people who displaced will live with a tarp and they will need resources.
+```{r}
+#The class variable is categorical so I want to encode it to numeric, 1 stand for Blue Tarp and 0 stand for non-Blue Tarp image.
+head(data$Class)
+data$Class <- ifelse(data$Class == "Blue Tarp", 1, 0)
+head(data$Class)
+```
+
+
+
+TRAING TEST SPLIT
+```{r}
+
+#This chunk is for splitting the trainning and testing data
+set.seed(1)
+
+#80% training and 20% testing
+train_size <- floor(0.8 * nrow(data))
+
+train_ind <- sample(seq_len(nrow(data)), size = train_size)
+
+train <- data[train_ind, ]
+test <- data[-train_ind, ]
+
+
+predictor = c("Red", "Green", "Blue")
+train.X = subset(train, select=predictor)
+train.Y = train["Class"]
+test.X = subset(test, select=predictor)
+test.Y = test["Class"]
+#Make those matrix to fit  and predict model
+train.X <- as.matrix(train.X)
+train.Y <- as.matrix(train.Y)
+test.X <- as.matrix(test.X)
+test.Y <- as.matrix(test.Y)
+```
+
+So, we have 50592 training data and 12649 testing data.
+```{r}
+#Let's take Blue Tarp class as an example, I suppose the blue numeric number will have the most porpotion.
+tarp_data = subset(data, data$Class==1)
+slices <- c(sum(tarp_data$Red), sum(tarp_data$Green), sum(tarp_data$Blue))
+lbls <- c("Red", "Green", "Blue")
+cols <- c("Red", "Green", "Blue")
+pct <- round(slices/sum(slices)*100)
+lbls <- paste(lbls, pct)
+lbls <- paste(lbls,"%",sep="")
+pie(slices, labels = lbls, main="Pie Chart of Colors for Blue Tarp data", col=cols)
+```
+Blue is the most. But does not over too many. We can not simply predict it by which color is the most.
+
+
+# Model Training
+For all these four models, I will use all of the predictors because 3 is quite small and we only have those variables.
+
+## Set-up 
+```{r}
+#- Get K-fold partition (so consistent to all models)
+set.seed(1) # set seed for replicability
+n.folds = 10 # number of folds for cross-validation
+fold = sample(rep(1:n.folds, length=nrow(train.X)))
+
+```
+
+
+## Logistic Regression
+
+Logistics regression. I will use all three data to do the model fitting. Using traincontrol() to do cross validation
+```{r}
+# define training control
+train_control <- trainControl(method = "cv", number = 10,)
+
+# train the model on training set
+model <- train(Class ~ Blue+Green+Red,
+               data = train,
+               trControl = train_control,
+               method = "glm",
+               family=binomial())
+# print cv scores
+summary(model)
+
+log_prediction = predict(model, test)
+# Changing probabilities, threshold is 0.5
+log_prediction <- ifelse(log_prediction > 0.5, 1, 0)
+log_table = table(test$Class, log_prediction)
+log_table
+log_acc = 1 - ((54+12)/12649)
+log_acc
+
+
+```
+
+## KNN
+```{r}
+#Tuning parameter k that we gonna test
+K = c(15, 12, 10, 8, 7, 6, 5, 4, 3)
+
+# Using a loop to do knn fitting
+data_knn = tibble()
+for(k in K){
+  knn = knn.reg(train.X,
+                y = train.Y,
+                test=train.X,
+                k=k)
+  knn.test = knn.reg(train.X,
+                y = train.Y,
+                test=test.X,
+                k=k)
+  #These commented codes are the attempt of using acc to be the evaluation. But the model (or fitting function) I already used is regression. So, I use mse to compare result.
+  #misClassError.train <- mean(knn$pred != train.Y)
+  #misClassError.test <- mean(knn$pred != test.Y)
+  #acc.train = 1 - misClassError.train
+  #acc.test = 1 - misClassError.test
+  r = train.Y-knn$pred        # residuals on training data  
+  mse.train = mean(r^2)
+  r.test = test.Y-knn.test$pred # residuals on test data
+  mse.test = mean(r.test^2)          # test MSE
+  edf = nrow(train.X)/k
+  #t = tibble(k=k, edf=edf, acc.train=acc.train, acc.test=acc.test)
+  t = tibble(k=k, edf=edf, mse.train=mse.train, mse.test=mse.test)
+  data_knn = bind_rows(data_knn, t)
+  
+}
+
+```
+
+### Tuning Parameter $k$
+
+```{r}
+data_knn
+knn.best= knn(train,
+               test,
+                cl=train$Class,
+                k=5)
+knn.best2= knn.reg(train.X,
+               train.Y,
+                test = test.X,
+                k=5)
+
+knn_cm <- table(test$Class, knn.best)
+knn_cm
+knn_acc = 1 - ((17+13)/12649)
+knn_acc
+```
+From the result table above, we can obtain a best parameter which is 5. And I also try the knn classifier with k = 5. We have a really high accuracy which is 0.9976.
+
+## Penalized Logistic Regression (ElasticNet)
+```{r}
+#I want to use elastic net to do Penalized Regression. And throught cv.glmnet, we can do the cross validation.
+data_elastic = tibble()
+for(i in 0:10){
+  fit.enet = cv.glmnet(train.X, train.Y, alpha=i/10, foldid=fold)
+  beta.enet = coef(fit.enet, s="lambda.min")
+  yhat.enet = predict(fit.enet, newx = test.X, s="lambda.min")
+  mse = mean(test.Y - yhat.enet)^2
+  #Set Threshold to 0.5
+  yhat.enet <- ifelse(yhat.enet > 0.5, 1, 0)
+  acc = 1 - mean(test.Y != yhat.enet)
+  t = tibble(alpha=i/10, lambdamin=fit.enet$lambda.min, mse=mse, acc=acc)
+  data_elastic = bind_rows(data_elastic, t)
+}
+
+```
+
+### Tuning Parameters
+At the above fitting part, I used for loop to loop the alpha parameter. Based on the alpha number, I chose lambda.min as the lambda number.
+```{r}
+data_elastic
+best_eln = cv.glmnet(train.X, train.Y, alpha = 1, fold=fold)
+pred = predict(best_eln, test.X, s="lambda.min")
+pred <- ifelse(pred > 0.5, 1, 0)
+eln_cm = table(test$Class, pred)
+eln_cm
+```
+The result shows that when alpha = 0, which is ridge regression has the wrost performance. Other cases have same acc. This is weired but it can because the threshold is not good. Based on the mse, I will choose the alpha is 1 which is the lasso regression.
+
+## Support Vector Machines (SVM)
+I am gonna use all three variables and polynomial kernel function to fit SVM model.
+```{r}
+data_svm = tibble()
+for(degree in 2:4){
+  acc = 0
+  for(f in 1:n.folds){
+    fit = svm(factor(Class) ~ Blue + Green + Red, 
+      data = train[fold != f, ], 
+      #: tuning parameters
+      kernel = "poly",
+      degree = degree, 
+      cost = 1
+    )
+    pred = predict(fit, train[fold == f,], decision.values = TRUE)
+
+    eval_data = tibble(
+      outcome = train$Class[fold == f], 
+      pred_hard = c(pred), 
+      pred_soft = as.numeric(attr(pred, "decision.values")))
+    missing_classerr <- mean(eval_data$outcome != eval_data$pred_hard)
+    acc = acc + 1 - missing_classerr
+  }
+  t = tibble(degree=degree, acc=acc/10)
+  data_svm = bind_rows(data_svm, t)
+}
+
+```
+
+### Tuning Parameters
+```{r}
+data_svm
+best_svm = svm(factor(Class) ~ Blue + Green + Red, 
+      data = train, 
+      #: tuning parameters
+      kernel = "poly",
+      degree = 2, 
+      cost = 1)
+
+pred = predict(fit, test, decision.values = TRUE)
+eval_data = tibble(
+    outcome = test.Y, 
+    pred_hard = c(pred), 
+    pred_soft = as.numeric(attr(pred, "decision.values")))
+
+svm_cm <- table(test$Class, eval_data$pred_hard)
+```
+We can see that when the degree is 2. The performance is the best.
+
+**NOTE: PART II same as above plus add Naive Bayes, LDA, QDA, Random Forest, and Boosted Trees to Model Training.**
+
+## Threshold Selection
+
+For logistic regression and penalized logistic regression, both of them return a value but not 0 or 1. So I selected threshold to 0.5 to select the classifcation of result.
+
+
+# Results (Cross-Validation)
+```{r}
+#Logistic regrssion
+log_acc
+log_table
+log_tpr = 12237/(12237+12)
+log_fpr = 54/(54+346)
+log_pre = 12237/(12237+54)
+#knn
+data_knn
+knn_cm
+knn_acc
+knn_tpr = 12232/(12232+17)
+knn_fpr = 13/(13+387)
+knn_pre = 12232/(12232+13)
+#penalized logistic regression
+eln_cm
+eln_tpr = 12249/(12249+0)
+eln_fpr = 256/(144+256)
+eln_pre = 12249/(12249+256)
+#svm
+data_svm
+svm_cm
+svm_tpr = 12249/(12249+0)
+svm_fpr = 128/(272+128)
+svm_pre = 12249/(12249+128)
+```
+
+## Performance Table
+
+** CV Performance Table Here**
+```{r}
+library(knitr)
+performance_table = tibble(Model=c("Log Reg", "KNN", "Penalized Log Reg", "SVM"), Tuning=c("None", "k=5", "alpha=1","degree=2"), AUROC="AUROC", Threshold=c("0.5","None","0.5","None"), Accuracy=c("99.48%","99.76%","97.97%", "99.34%"), TPR=c(log_tpr,knn_tpr,eln_tpr,svm_tpr), FPR=c(log_fpr, knn_fpr,eln_fpr,svm_fpr), Precision=c(log_pre, knn_pre, eln_pre, svm_pre))
+knitr::kable(performance_table, "pipe")
+
+```
+
+## ROC Curves
+
+**ROC plots Here**
+```{r}
+
+pred_data = 
+  tibble(
+    logistic = log_prediction, 
+    knn = knn.best2$pred,
+    penalize_logistic = predict(best_eln, s="lambda.min", newx=test.X)[,1],
+    svm = eval_data$pred_soft,
+    linked = test.Y %>% factor(levels=c(1,0))
+  ) %>%  # note: response must be a factor
+  # convert to long format 
+  gather(model, prediction,logistic, knn, penalize_logistic) %>% 
+  # get performance for each model
+  group_by(model) %>% 
+  roc_curve(truth = linked, prediction)          # get ROC curve data
+  
+
+#: plot ROC curve
+pred_data %>% 
+  ggplot(aes(1-specificity, sensitivity, color=model)) + 
+  geom_path() + 
+  scale_color_manual(values=c(knn='black', logistic='red', penalize_logistic='blue', svm='yellow')) +
+  scale_x_continuous(breaks=seq(0, 1, by=.2)) + 
+  scale_y_continuous(breaks=seq(0, 1, by=.2))
+```
+
+
+# Conclusions
+
+### Conclusion \#1 
+In conclusion, based on the test result we created from above, we can see the knn model have an overall outstanding performance compared to other model result. Based on the accuracy, FPR and precision, knn is my best choice of model in this project. However, all models have a pretty high accuracy and gap between those models actually small. But knn has its own advantage. It is easy to implement, fast to fit the model and easy to explain. 
+
+
+### Conclusion \#2
+I think one improvement should be the tuning part of svm. Because I used 10-fold cross validation and it is really time consuming to tuning the parameter of svm. Same thing in other hyper parameter tuning, I have space to try a bigger range of value. Also threshold is another aspect that I can improve. From our ROC cruve, we can see that the highest point for logistic and penalize logistic is not exactly 0.5. So my results from logistic and penalize logistic have space to improve.
+
+
+### Conclusion \#3
+From results shown above, seems like a higher edf(or we could say higher variance) may not lead a better performance. The normal reason for this is obviously the overfitting in our training data. Because of the bias-variance trade off, we wish to find a balance point between them. That's why I split the test data and used it during the model fitting. There is another point I think is our variables are good enough for us to predict whether it is a image of blue tarp or not. We can see that our test results are all nearly perfect. We do not need to somehow extend extra feature space or limit the coefficent of original variables. So, we can see that the peanlize logistic regression even perform worse than logistic regression. Thus, to fit a better or effective model, have a nice understanding to your dataset is significantly important. 
+
+```{r, echo=FALSE}
+ knitr::knit_exit()    # ignore everything after this
+## Uncomment the above line for Part I
+## You can remove this entire code chunk for Part II
+```
+
+
+**ADDITIONAL SECTIONS FOR PART II:**
+
+# Hold-out Data / EDA
+
+Load hold-out data, explore data, etc. 
+
+
+# Results (Hold-Out)
+
+## Cross-Validation Performance Table
+
+**CV Performance Table (for all models) Here**
+
+
+## Hold-out Performance Table
+
+**Hold-Out Performance Table Here**
+
+
+# Final Conclusions
+
+### Conclusion \#1 
+
+### Conclusion \#2
+
+### Conclusion \#3
+
+### Conclusion \#4 
+
+### Conclusion \#5
+
+### Conclusion \#6
+

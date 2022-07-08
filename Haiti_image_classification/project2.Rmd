@@ -1,0 +1,1369 @@
+---
+title: "Disaster Relief Project: Template"
+author: "Jie Tang"
+date: "`r format(Sys.Date(), '%b %d, %Y')`"
+output:
+  html_document:
+    number_sections: true    
+    toc: true
+    toc_float: true
+    theme: cosmo
+    highlight: espresso    
+# You can make the format personal - this will get you started:  
+# https://bookdown.org/yihui/rmarkdown/html-document.html#appearance_and_style    
+---
+
+<!--- Below are global settings for knitr. You can override any of them by adding the changes to individual chunks --->
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(
+  error=TRUE,          # Keep compiling upon error
+  collapse=FALSE,      # collapse by default
+  echo=TRUE,           # echo code by default
+  comment = "#>",      # change comment character
+  fig.width = 5.5,     # set figure width
+  fig.align = "center",# set figure position
+  out.width = "49%",   # set width of displayed images
+  warning=TRUE,        # show R warnings
+  message=TRUE         # show R messages
+)
+```
+
+<!--- Change font sizes (or other css modifications) --->
+<style>
+h1.title {
+  font-size: 2.2em; /* Title font size */
+}
+h1 {
+  font-size: 2em;   /* Header 1 font size */
+}
+h2 {
+  font-size: 1.5em;
+}
+h3 { 
+  font-size: 1.2em;
+}
+pre {
+  font-size: 0.8em;  /* Code and R output font size */
+}
+</style>
+
+
+
+**SYS 6018 | Spring 2022 | University of Virginia **
+
+*******************************************
+
+# Introduction 
+
+Our project is aiming to predict the classification of imagery data in Haiti after the earthquake happened in 2010. Because of this huge earthquake, people who living in Haiti were displaced. Now we have ability to obtain those imagery data by  a team from the Rochester Institute of Technology flew an aircraft to collect high resolution geo-referenced imagery. To find the right place from those images more effectively, we wish to design models for us to help us do this thing and that is our motivation. 
+
+# Training Data / EDA
+# Hold-out Data / EDA
+
+Load training data, hold-out data, explore data, etc. 
+
+```{r load-packages, warning=FALSE, message=FALSE}
+# Load Required Packages
+library(tidyverse)
+library(ggplot2)
+library(glmnet)
+library(broom)
+library(FNN)
+library(e1071)
+library(yardstick)
+library(caret)
+library(MASS)
+library(randomForest)
+library(gbm)
+#Load our csv data file
+data = read.csv('HaitiTraining.csv')
+
+proj_dir = "./project_data"
+
+#Load holdout data file
+read_lines(file.path(proj_dir, "orthovnir057_ROI_NON_Blue_Tarps.txt"), n_max=15)
+
+#Here i have to specific dplyr::select because MASS package also have select function.
+holdout_data = read_table(file.path(proj_dir, "orthovnir057_ROI_NON_Blue_Tarps.txt"), skip=8, col_names= FALSE) %>%
+  dplyr::select(Red=X8, Green=X9, Blue=X10) %>%
+  mutate(bluetarp=0, file="057_NON_Blue_Tarps")
+
+holdout_data <- bind_rows(holdout_data, read_table(file.path(proj_dir, "orthovnir067_ROI_Blue_Tarps.txt"), skip=8, col_names= FALSE) %>%
+  dplyr::select(Red=X8, Green=X9, Blue=X10) %>%
+  mutate(bluetarp=1, file="067_Blue_Tarps"))
+
+#Blue_Tarps_data file has different template, so we need to change a little bit.
+read_lines(file.path(proj_dir, "orthovnir067_ROI_Blue_Tarps_data.txt"), n_max=15)
+
+holdout_data <- bind_rows(holdout_data, read_table(file.path(proj_dir, "orthovnir067_ROI_Blue_Tarps_data.txt"), skip=1, col_names= FALSE) %>%
+  dplyr::select(Red=X1, Green=X2, Blue=X3) %>%
+  mutate(bluetarp=1, file="067_Blue_Tarps_data"))
+
+holdout_data <- bind_rows(holdout_data, read_table(file.path(proj_dir, "orthovnir067_ROI_NOT_Blue_Tarps.txt"), skip=8, col_names= FALSE) %>%
+  dplyr::select(Red=X8, Green=X9, Blue=X10) %>%
+  mutate(bluetarp=0, file="067_NOT_Blue_Tarps"))
+
+holdout_data <- bind_rows(holdout_data, read_table(file.path(proj_dir, "orthovnir069_ROI_Blue_Tarps.txt"), skip=8, col_names= FALSE) %>%
+  dplyr::select(Red=X8, Green=X9, Blue=X10) %>%
+  mutate(bluetarp=1, file="069_Blue_Tarps"))
+
+holdout_data <- bind_rows(holdout_data, read_table(file.path(proj_dir, "orthovnir069_ROI_NOT_Blue_Tarps.txt"), skip=8, col_names= FALSE) %>%
+  dplyr::select(Red=X8, Green=X9, Blue=X10) %>%
+  mutate(bluetarp=0, file="069_NOT_Blue_Tarps"))
+
+holdout_data <- bind_rows(holdout_data, read_table(file.path(proj_dir, "orthovnir078_ROI_Blue_Tarps.txt"), skip=8, col_names= FALSE) %>%
+  dplyr::select(Red=X8, Green=X9, Blue=X10) %>%
+  mutate(bluetarp=1, file="078_Blue_Tarps"))
+
+holdout_data <- bind_rows(holdout_data, read_table(file.path(proj_dir, "orthovnir078_ROI_NON_Blue_Tarps.txt"), skip=8, col_names= FALSE) %>%
+  dplyr::select(Red=X8, Green=X9, Blue=X10) %>%
+  mutate(bluetarp=0, file="078_NON_Blue_Tarps"))
+
+#Check the columns of Haiti data
+head(data)
+head(holdout_data)
+#Check the summary of our data
+#summary(data$Class)
+#Hmisc::describe(data$Class)
+Hmisc::describe(data)
+Hmisc::describe(holdout_data)
+#No missing data in both files.
+```
+We have 63241 data and no missing one. So we do not need to fill in or replace anything. Meanwhile, except the "Class" variable, all other predictors are numeric which means we do not need to use encoding to category variable. 
+There are in total five classes of 'class' which are Blue Tarp, Rooftop, Soil, Various Non-Trap and Vegetation. Vegetation has the most proportion and Blue Tarp has the least.
+
+And the range for color should be inside 0 to 255.
+
+Some preprocessing: Change the multi-class prediction to binary prediction. Most of our models only fit with binary classifcation. And in our case, I consider the Blu Tarp is the most significant place to clarify. Becuase people who displaced will live with a tarp and they will need resources.
+```{r}
+is.factor(data$Class)
+is.factor(holdout_data$bluetarp)
+data$Class <- as.factor(ifelse(data$Class == "Blue Tarp", 1, 0))
+holdout_data$bluetarp <- as.factor(ifelse(holdout_data$bluetarp == 1, 1, 0))
+is.factor(data$Class)
+is.factor(holdout_data$bluetarp)
+```
+```{r}
+#Let's take Blue Tarp class as an example, I suppose the blue numeric number will have the most part.
+tarp_data = subset(data, data$Class==1)
+slices <- c(sum(tarp_data$Red), sum(tarp_data$Green), sum(tarp_data$Blue))
+lbls <- c("Red", "Green", "Blue")
+cols <- c("Red", "Green", "Blue")
+pct <- round(slices/sum(slices)*100)
+lbls <- paste(lbls, pct)
+lbls <- paste(lbls,"%",sep="")
+pie(slices, labels = lbls, main="Pie Chart of Colors for Blue Tarp data", col=cols)
+```
+Blue is the most. But does not over too many. We can not simply predict it by which color is the most.
+
+
+```{r}
+l1 = length(subset(data$Class, data$Class==1))
+l2 = length(subset(data$Class, data$Class==0))
+l3 = length(subset(holdout_data$bluetarp, holdout_data$bluetarp==1))
+l4 = length(subset(holdout_data$bluetarp, holdout_data$bluetarp==0))
+
+slices <- c(l1, l2)
+lbls <- c("BlueTarp", "NOBlueTarp")
+cols <- c("Blue", "Black")
+pct <- round(slices/sum(slices)*100)
+lbls <- paste(lbls, pct)
+lbls <- paste(lbls,"%",sep="")
+pie(c(l1,l2), labels = lbls, main="Pie Chart of Colors for Blue Tarp data", col=cols)
+
+slices <- c(l3, l4)
+lbls <- c("BlueTarp", "NonBlueTarp")
+cols <- c("Blue", "Black")
+pct <- round(slices/sum(slices)*100)
+lbls <- paste(lbls, pct)
+lbls <- paste(lbls,"%",sep="")
+pie(c(l3,l4), labels = lbls, main="Pie Chart of Colors for Blue Tarp data", col=cols)
+```
+By this pie chart, we can see our data is really unbalanced. Most of data we have are non-bluetarp.
+
+
+# Model Training
+For all these nine models, I will use all of the predictors because 3 is quite small and we only have those variables.
+
+## Set-up 
+```{r}
+#- Get K-fold partition (so consistent to all models)
+set.seed(1) # set seed for reproducible 
+n.folds = 10 # number of folds for cross-validation
+fold = sample(rep(1:n.folds, length=nrow(data)))
+```
+
+## Logistic Regression
+```{r warning=FALSE}
+#- Iterate over folds
+perf = tibble() # to save performance metric
+
+#For logistic regression, there is no hyper parameter to tuning.
+
+for(k in 1:10){ 
+  #-- Set training/test data for fold k
+  test = which(fold == k) # indices of holdout/validation data
+  train = which(fold != k) # indices of fitting/training data
+  n.val = length(test) # number of observations in validation
+  
+  lg = glm(Class ~ Red + Green + Blue, data = data, family = "binomial")
+  p_hat = predict(lg, data[test,], type='response')
+  
+  #: evaluate performance
+  log_loss = yardstick::mn_log_loss_vec(data$Class[test], as.numeric(p_hat), event_level = "second")
+  AUROC = yardstick::roc_auc_vec(data$Class[test], as.numeric(p_hat), event_level = "second")
+
+  out = tibble(log_loss, AUROC) %>% 
+  mutate(fold = k, tuning = "None")
+    
+  perf = bind_rows(perf, out)
+}
+```
+Cross-validation performance
+```{r warning=FALSE}
+pred = numeric(nrow(data))
+for(v in unique(fold)) {
+  # set fit/eval split
+  ind_fit = which(fold != v)
+  ind_eval = which(fold == v)
+  fit <- glm(Class ~ ., data = data[ind_fit, ], family="binomial")
+  pred[ind_eval] <- predict(fit ,data[ind_eval,], type = "response" )
+  
+}
+eval_data = tibble(
+  y = data$Class,
+  pred = pred,
+)
+
+# ROC curves
+ROC_data = yardstick::roc_curve(eval_data,
+  truth = y,
+  estimate = pred,
+  event_level = "second")
+autoplot(ROC_data)
+lg_cv_AUROC = yardstick::roc_auc_vec(data$Class, as.numeric(pred), event_level = "second")
+```
+ROC curve
+For all of the ROC curve, we use the out-of sample data. In cross-validation on training data case, we connect predictions of holdout data in 10 folds and do the out sample ROC curves. In hold-out data case, we directly use all hold-out data to do ROC curves.
+
+-------------------------Threshold selection--------------------------------
+
+In this disaster, we should try to find all possible survivors. In this case, we do not want to miss any picture that has chance to be Blue Tarp, we allow the mistake that a wrong recognization of BlueTarp. Our positive case is image is Blue Tarp. False Positive means we think it is Blue Tarp but it is not. False negative means we think it is not Blue Tarp but it is. So, we give more penalty to FN than FP. 
+In this case, I take the cost of FN 5 times worse than FP in every model threshold selection.
+
+```{r}
+#-- Make function to calculate confusion matrix metrics
+get_conf <- function(thres, y, p_hat) {
+yhat = ifelse(p_hat >= thres, 1L, 0L)
+tibble(threshold = thres,
+TP = sum(y == 1 & yhat == 1),
+FP = sum(y == 0 & yhat == 1),
+FN = sum(y == 1 & yhat == 0),
+TN = sum(y == 0 & yhat == 0)
+)
+}
+```
+
+
+```{r}
+#-- Calculate for range of thresholds
+thres = seq(.05, .20, length=50) # set of thresholds
+perf_thres = map_df(thres, ~get_conf(., y=data$Class, p_hat = pred)) %>% mutate(cost = FN*5 + FP*1)
+
+res <- perf_thres %>%
+slice_min(cost) %>% # choose threshold with minimum costs
+transmute(threshold,
+Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res
+#Met two same min threshold problem
+if(length(res) != 1){
+  res <- res[1,]
+}
+lg_cv_threshold = res$threshold	
+lg_cv_acc = res$Accuracy
+lg_cv_tpr = res$TPR
+lg_cv_fpr = res$FPR
+lg_cv_pre = res$PRE
+```
+
+```{r}
+#No tuning parameter for glm().
+#We use holdout data to evaluate logistic model and draw AUROC curve.
+#Fit model with training data and test it with holdout data.
+fit = glm(Class~., data, family = "binomial")
+pred = predict(fit, holdout_data, type="response")
+eval_data = tibble(
+  y = holdout_data$bluetarp,
+  pred = pred,
+  yhat = ifelse(pred > .50, 1, 0) # hard classification
+)
+# ROC curves builds from out-sample data
+ROC_data = yardstick::roc_curve(eval_data,
+  truth = y,
+  estimate = pred,
+  event_level = "second")
+autoplot(ROC_data)
+lg_AUROC = yardstick::roc_auc_vec(holdout_data$bluetarp, as.numeric(pred), event_level = "second")
+```
+
+
+
+```{r}
+#-- Calculate for range of thresholds
+thres = seq(.05, .20, length=50) # set of thresholds
+perf_thres = map_df(thres, ~get_conf(., y=holdout_data$bluetarp, p_hat = pred)) %>% mutate(cost = FN*5 + FP*1)
+
+res <- perf_thres %>%
+slice_min(cost) %>% # choose threshold with minimum costs
+transmute(threshold,
+Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res
+#Met two same min threshold problem
+if(length(res) != 1){
+  res <- res[1,]
+}
+lg_threshold = res$threshold	
+lg_acc = res$Accuracy
+lg_tpr = res$TPR
+lg_fpr = res$FPR
+lg_pre = res$PRE
+```
+
+
+## KNN
+For KNN, the tuning parameter will be the number of K. In KNN, we should consider about normalize each column range for a better distance calculation.
+But in our case, Red Green and Blue have same range, so I keep those data to fit model. Also, knn does not allow categorical data inside. So, we need to convert factor to numeric. At the same time, knn() function returns result with probability. So, we need to read attribute of model result to get probabbility.
+```{r}
+library(gmodels)
+knn.data <- data 
+knn.data$Class <- as.numeric(ifelse(knn.data$Class == 1, 1, 0))
+#Tuning parameter k that we gonna test
+K = c(15, 12, 10, 8, 7, 6, 5, 4, 3)
+perf = tibble()
+for(i in 1:10) {
+  #-- Set training/test data for fold k
+  test = which(fold == i) # indices of holdout/validation data
+  train = which(fold != i) # indices of fitting/training data
+  cl = as.numeric(knn.data[train,1])
+  n.val = length(test) # number of observations in validation
+  
+  for(k in K) {
+    set.seed(1)                     
+    knn = knn(train = knn.data[train,c(2,4)], test = knn.data[test,c(2,4)], cl = cl, k=k, prob=TRUE)
+    #: estimate probability in hold out set
+    #CrossTable(x = knn.data[test,1] , y = knn, prop.chisq = FALSE)
+    p_hat = knn
+    #p_hat = predict(knn, knn.data[test,])
+    #: evaluate performance
+    log_loss = yardstick::mn_log_loss_vec(data$Class[test], as.numeric(p_hat), event_level = "second")
+    AUROC = yardstick::roc_auc_vec(data$Class[test], as.numeric(p_hat), event_level = "second")
+
+    out = tibble(log_loss, AUROC) %>% 
+      mutate(fold = i, tuning = k, edf=n.val/k )
+    
+    perf = bind_rows(perf, out)
+  }
+}
+```
+
+### Tuning Parameter $k$
+
+How were tuning parameter(s) selected? What value is used? Plots/Tables/etc.
+```{r}
+perf
+(avg_perf = perf %>%
+group_by(tuning) %>%
+summarize(
+avg_log_loss = mean(log_loss),
+avg_AUROC = mean(AUROC),
+sd_log_loss = sd(log_loss),
+sd_AUROC = sd(AUROC)
+) %>%
+arrange(avg_log_loss, -avg_AUROC))
+
+#So we can see that when k=15, we have the best performance
+pred = numeric(nrow(data))
+for(v in unique(fold)) {
+  # set fit/eval split
+  ind_fit = which(fold != v)
+  ind_eval = which(fold == v)
+  cl = as.numeric(knn.data[ind_fit,1])
+  knn = knn(train = knn.data[ind_fit,c(2,4)], test = knn.data[ind_eval,c(2,4)], cl = cl, k=15)
+  #We need to change factor to numeric
+  pred[ind_eval] = as.numeric(ifelse(knn == 1, 1, 0))
+}
+
+
+eval_data = tibble(
+  y = data$Class,
+  pred = pred
+)
+# ROC curves
+ROC_data = yardstick::roc_curve(eval_data,
+  truth = y,
+  estimate = pred,
+  event_level = "second")
+autoplot(ROC_data)
+knn_cv_AUROC = yardstick::roc_auc_vec(data$Class, as.numeric(pred), event_level = "second")
+```
+
+Threshold. We use the same range of threshold [0.05,0.2]
+```{r}
+#-- Calculate for range of thresholds
+perf_thres = map_df(thres, ~get_conf(., y=knn.data$Class, p_hat = pred)) %>% mutate(cost = FN*5 + FP*1)
+
+res <- perf_thres %>%
+slice_min(cost) %>% # choose threshold with minimum costs
+transmute(threshold,
+Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res
+#Met two same min threshold problem
+if(length(res) != 1){
+  res <- res[1,]
+}
+knn_cv_threshold = res$threshold	
+knn_cv_acc = res$Accuracy
+knn_cv_tpr = res$TPR
+knn_cv_fpr = res$FPR
+knn_cv_pre = res$PRE
+```
+
+```{r}
+#We use holdout data to evaluate knn model and draw AUROC curve.
+#Fit model with training data and test it with holdout data.
+pred = knn(train = knn.data[,c(2,4)], test = holdout_data[,c(1,3)], cl = knn.data$Class, k=15)
+pred <- as.numeric(ifelse(pred == 1, 1, 0))
+
+
+fit = glm(Class~., data, family = "binomial")
+pred = predict(fit, holdout_data, type="response")
+eval_data = tibble(
+  y = holdout_data$bluetarp,
+  pred = pred,
+  yhat = ifelse(pred > .50, 1, 0) # hard classification
+)
+# ROC curves builds from out-sample data
+ROC_data = yardstick::roc_curve(eval_data,
+  truth = y,
+  estimate = pred,
+  event_level = "second")
+autoplot(ROC_data)
+knn_AUROC = yardstick::roc_auc_vec(holdout_data$bluetarp, as.numeric(pred), event_level = "second")
+```
+
+```{r}
+#-- Calculate for range of thresholds
+perf_thres = map_df(thres, ~get_conf(., y=holdout_data$bluetarp, p_hat = pred)) %>% mutate(cost = FN*5 + FP*1)
+
+res <- perf_thres %>%
+slice_min(cost) %>% # choose threshold with minimum costs
+transmute(threshold,
+Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res
+#Met two same min threshold problem
+if(length(res) != 1){
+  res <- res[1,]
+}
+knn_threshold = res$threshold	
+knn_acc = res$Accuracy
+knn_tpr = res$TPR
+knn_fpr = res$FPR
+knn_pre = res$PRE
+```
+
+## Penalized Logistic Regression (ElasticNet)
+Model setup
+```{r}
+#- Set-up model matrix (using main, quadratic, and 2-way interactions)
+fmla2 = as.formula(Class ~ poly(Red, Green, Blue, degree=2) )
+X = model.matrix(fmla2, data)[, -1]
+Y = data$Class
+```
+
+
+### Tuning Parameters
+In ElasticNet, we always tuning the alpha and lambda. Once we decide the alpha value, glmnet() fit models with a set of lambda values. And here I use deviance changes to tune parameters.
+```{r}
+library(glmnet)
+library(broom)
+#-- Initialize
+alpha_seq = c(0, .25, .5, .75, 1) # set of alpha values to search
+
+perf_alpha = tibble()
+#-- Search over alpha (and lambda)
+for(i in seq_along(alpha_seq)){
+  a = alpha_seq[i]
+  fit = cv.glmnet(X, Y, family="binomial", alpha = a,
+  foldid = fold, # We use predefine cv fold as foldid argument input
+  type.measure = "deviance")
+  perf = broom::tidy(fit) %>% slice_min(estimate) %>% mutate(alpha = a)
+  perf_alpha = bind_rows(perf_alpha, perf)
+}
+```
+
+```{r}
+perf_alpha %>%
+ggplot(aes(alpha, estimate)) + geom_point() +
+geom_errorbar(aes(ymin=conf.low, ymax=conf.high), width=.05)
+```
+We can see from this graph that when alpha is 1 (lasso), we have best performance. We store this alpha and along best lambda value for following model fitting.
+```{r}
+tune_enet = perf_alpha %>%
+  slice_min(estimate) %>% # choose best performance (minimize deviance)
+  dplyr::select(alpha, lambda) # keep alpha and lambda
+tune_enet
+```
+
+Cross-validation performance 
+```{r}
+pred.enet = numeric(nrow(data))
+for(v in unique(fold)) {
+  fit = glmnet(X[fold != v,], Y[fold != v], family="binomial",
+  alpha = tune_enet$alpha)
+  pred.enet[fold == v] = predict(fit, X[fold == v, ], type="response",
+  s = tune_enet$lambda)
+}
+
+```
+
+AUROC curve and Threshold selection
+```{r}
+pred_data = tibble(row = 1:nrow(data), fold = fold, y = Y, p_hat = pred.enet)
+
+ROC_info = pred_data %>%
+roc_curve(truth=y, estimate=p_hat, event_level="second")
+
+ROC_info %>%
+  autoplot() +
+  scale_x_continuous(breaks = seq(0, 1, by=.1)) +
+  scale_y_continuous(breaks = seq(0, 1, by=.1))
+
+eln_cv_AUROC = yardstick::roc_auc_vec(data$Class, as.numeric(pred.enet), event_level = "second")
+
+perf_thres = map_df(thres, ~get_conf(., y=pred_data$y, p_hat = pred_data$p_hat)) %>% 
+  mutate(cost = FN*5 + FP*1)
+perf_thres
+
+res <- perf_thres %>%
+slice_min(cost) %>% # choose threshold with minimum costs
+transmute(threshold,
+Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res
+#Met two same min threshold problem
+if(length(res) != 1){
+  res <- res[1,]
+}
+eln_cv_threshold = res$threshold	
+eln_cv_acc = res$Accuracy
+eln_cv_tpr = res$TPR
+eln_cv_fpr = res$FPR
+eln_cv_pre = res$PRE
+```
+```{r}
+perf_thres %>%
+ggplot(aes(threshold, cost)) +
+geom_line() +
+geom_point() + geom_point(data = . %>% slice_min(cost), color="red", size=4) +
+geom_vline(xintercept = 1/6, color="red") +
+scale_x_continuous(breaks = seq(0, 1, by=.02))
+```
+
+Hold-out test performance
+```{r}
+fit = glmnet(X, Y, family="binomial",
+  alpha = tune_enet$alpha)
+
+fmla2 = as.formula(bluetarp ~ poly(Red, Green, Blue, degree=2) )
+X = model.matrix(fmla2, holdout_data)[, -1]
+pred = predict(fit, X, type="response",
+  s = tune_enet$lambda)
+```
+
+```{r}
+pred_data = tibble(row = 1:nrow(holdout_data), y = holdout_data$bluetarp, p_hat = as.numeric(pred))
+
+ROC_info = pred_data %>%
+roc_curve(truth=y, estimate=p_hat, event_level="second")
+
+ROC_info %>%
+  autoplot() +
+  scale_x_continuous(breaks = seq(0, 1, by=.1)) +
+  scale_y_continuous(breaks = seq(0, 1, by=.1))
+
+eln_AUROC = yardstick::roc_auc_vec(holdout_data$bluetarp, as.numeric(pred), event_level = "second")
+perf_thres = map_df(thres, ~get_conf(., y=pred_data$y, p_hat = pred_data$p_hat)) %>% 
+  mutate(cost = FN*5 + FP*1)
+perf_thres
+
+res <- perf_thres %>%
+slice_min(cost) %>% # choose threshold with minimum costs
+transmute(threshold,
+Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res
+#Met two same min threshold problem
+if(length(res) != 1){
+  res <- res[1,]
+}
+eln_threshold = res$threshold	
+eln_acc = res$Accuracy
+eln_tpr = res$TPR
+eln_fpr = res$FPR
+eln_pre = res$PRE
+```
+
+## Support Vector Machines (SVM)
+
+For SVM tuning, because of time I am just gonna use three folds to tune our parameter. We use gridsearch to tuning hyper-paramters gamma and cost.
+```{r}
+#- Set tuning parameter grid search
+grid = expand_grid(
+  kernel = "radial",
+  gamma = seq(1/8, 2, length=4),
+  cost = 10^seq(-2,5, length=4)
+)
+
+perf = tibble() 
+for(i in 1:3){ # We only use three folds here
+  #-- Set training/test data for fold i
+  test = which(fold == i) # indices of holdout/validation data
+  train = which(fold != i) # indices of fitting/training data
+  n.val = length(test) # number of observations in validation
+  #-- loop over tuning grid
+  for(j in 1:nrow(grid)){
+    tpars = grid[j,]
+    #: fit model (i.e., estimate model parameters)
+    fit = e1071::svm(Class ~ Red + Green + Blue, data = data[train,], type = "C-classification", probability=TRUE, # enable probability output 
+                     scale = TRUE, kernel = tpars$kernel, gamma = tpars$gamma,
+                     cost = tpars$cost)
+    #: estimate probability in hold out set
+    p_hat = predict(fit, data[test,], probability = TRUE) %>%
+    attr("probabilities") %>% .[,"1"]
+    #: evaluate performance
+    log_loss = yardstick::mn_log_loss_vec(data$Class[test], p_hat, event_level = "second")
+    AUROC = yardstick::roc_auc_vec(data$Class[test], p_hat, event_level = "second")
+    eval = tibble(log_loss, AUROC) %>%
+    mutate(fold = i, tuning = j, n.val, kernel=tpars$kernel, gamma=tpars$gamma,
+    cost=tpars$cost)
+
+    perf = bind_rows(perf, eval)
+  }
+}
+```
+
+### Tuning Parameters
+```{r}
+perf
+(avg_perf = perf %>%
+  group_by(tuning, kernel, gamma, cost) %>%
+  summarize(
+    avg_log_loss = mean(log_loss),
+    avg_AUROC = mean(AUROC),
+    sd_log_loss = sd(log_loss),
+    sd_AUROC = sd(AUROC)
+  ) %>%
+  arrange(avg_log_loss, -avg_AUROC))
+```
+
+```{r}
+ggplot(avg_perf, aes(gamma, cost, fill=avg_log_loss)) +
+geom_tile() + scale_y_log10() +
+scale_fill_distiller()
+tune_svm = list(cost = 400, gamma = 2, kernel = "radial")
+
+```
+From performance table, the best tuning parameters are gamma = 2.0 and cost = 464. From this graph, we can see the area with least average log loss is when also around gamma = 2.0 cost = 400. Based on those result and easy calculation, I will choose gamma = 2.0 and cost = 400 for my best svm model.
+
+Cross-validation performance
+```{r}
+pred = numeric(nrow(data))
+for(v in unique(fold)) {
+  # set fit/eval split
+  ind_fit = which(fold != v)
+  ind_eval = which(fold == v)
+  # fit SVM (for specific tuning parameters)
+  fit = e1071::svm(Class ~ Red + Green + Blue,
+  data = data[ind_fit,],
+  type = "C-classification",
+  probability=TRUE, # enable probability output
+  #: tuning parameters
+  scale = TRUE,
+  kernel = tune_svm$kernel,
+  gamma = tune_svm$gamma,
+  cost = tune_svm$cost)
+  # estimate probability in hold out set
+  pred[ind_eval] = predict(fit, data[ind_eval,], probability = TRUE) %>%
+  attr("probabilities") %>% .[,"1"]
+}
+```
+
+```{r}
+eval_data = tibble( y = data$Class, pred = pred,
+                    yhat = ifelse(pred > .50, 1, 0))
+# ROC curves
+ROC_data = yardstick::roc_curve(eval_data, truth = y, estimate = pred,
+                                event_level = "second")
+autoplot(ROC_data)
+
+svm_cv_AUROC = yardstick::roc_auc_vec(data$Class, as.numeric(pred), event_level = "second")
+perf_thres = map_df(thres, ~get_conf(., y=data$Class, p_hat = pred)) %>%
+  mutate(cost = FN*5 + FP*1)
+
+res <- perf_thres %>%
+  slice_min(cost) %>% # choose threshold with minimum costs
+  transmute(threshold,Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res
+#Met two same min threshold problem
+if(length(res) != 1){
+  res <- res[1,]
+}
+svm_cv_threshold = res$threshold	
+svm_cv_acc = res$Accuracy
+svm_cv_tpr = res$TPR
+svm_cv_fpr = res$FPR
+svm_cv_pre = res$PRE
+```
+
+
+Hold-out data performance
+```{r}
+pred = numeric(nrow(holdout_data))
+
+fit = e1071::svm(Class ~ Red + Green + Blue, data = data[], type = "C-classification", probability=TRUE, # enable probability output
+  #: tuning parameters 
+  scale = TRUE, kernel = tune_svm$kernel, gamma = tune_svm$gamma, cost = tune_svm$cost)
+  # estimate probability in hold out set
+  pred = predict(fit, holdout_data, probability = TRUE) %>% attr("probabilities") %>% .[,"1"]
+
+eval_data = tibble( y = holdout_data$bluetarp, pred = pred,
+                    yhat = ifelse(pred > .50, 1, 0))
+# ROC curves
+ROC_data = yardstick::roc_curve(eval_data, truth = y, estimate = pred,
+                                event_level = "second")
+autoplot(ROC_data)
+
+svm_AUROC = yardstick::roc_auc_vec(holdout_data$bluetarp, as.numeric(pred), event_level = "second")
+perf_thres = map_df(thres, ~get_conf(., y=holdout_data$bluetarp, p_hat = pred)) %>%
+  mutate(cost = FN*5 + FP*1)
+
+res <- perf_thres %>%
+  slice_min(cost) %>% # choose threshold with minimum costs
+  transmute(threshold,Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res
+#Met two same min threshold problem
+if(length(res) != 1){
+  res <- res[1,]
+}
+svm_threshold = res$threshold	
+svm_acc = res$Accuracy
+svm_tpr = res$TPR
+svm_fpr = res$FPR
+svm_pre = res$PRE
+```
+
+## Naive Bayes
+There is no hyper-parameter to tune in Naive Bayes. We directly use model to evaluate training data and hold-out data.
+
+Cross-validation performance
+```{r}
+library(naivebayes)
+pred = numeric(nrow(data))
+for(v in unique(fold)) {
+  # set fit/eval split
+  ind_fit = which(fold != v)
+  ind_eval = which(fold == v)
+  #naive-bayes model fitting
+  set.seed(1)
+  fit = naiveBayes(Class~., data = data[ind_fit,])
+  # estimate probability in hold out set
+  pred[ind_eval] = predict(fit, data[ind_eval,], type="raw")[,2]
+}
+```
+
+```{r}
+eval_data = tibble( y = data$Class, pred = pred,
+                    yhat = ifelse(pred > .50, 1, 0))
+# ROC curves
+ROC_data = yardstick::roc_curve(eval_data, truth = y, estimate = pred,
+                                event_level = "second")
+autoplot(ROC_data)
+
+nb_cv_AUROC = yardstick::roc_auc_vec(data$Class, as.numeric(pred), event_level = "second")
+perf_thres = map_df(thres, ~get_conf(., y=data$Class, p_hat = pred)) %>%
+  mutate(cost = FN*5 + FP*1)
+
+res <- perf_thres %>%
+  slice_min(cost) %>% # choose threshold with minimum costs
+  transmute(threshold,Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res
+#Met two same min threshold problem
+if(length(res) != 1){
+  res <- res[1,]
+}
+nb_cv_threshold = res$threshold	
+nb_cv_acc = res$Accuracy
+nb_cv_tpr = res$TPR
+nb_cv_fpr = res$FPR
+nb_cv_pre = res$PRE
+```
+
+Hold-out data performance
+```{r}
+#We use training data to fit model and evaluate it by hold-out data.
+fit = naiveBayes(Class~., data = data)
+# estimate probability in hold out set
+pred = predict(fit, holdout_data, type="raw")[,2]
+
+```
+```{r}
+eval_data = tibble( y = holdout_data$bluetarp, pred = pred,
+                    yhat = ifelse(pred > .50, 1, 0))
+# ROC curves
+ROC_data = yardstick::roc_curve(eval_data, truth = y, estimate = pred,
+                                event_level = "second")
+autoplot(ROC_data)
+
+nb_AUROC = yardstick::roc_auc_vec(holdout_data$bluetarp, as.numeric(pred), event_level = "second")
+perf_thres = map_df(thres, ~get_conf(., y=holdout_data$bluetarp, p_hat = pred)) %>%
+  mutate(cost = FN*5 + FP*1)
+
+res <- perf_thres %>%
+  slice_min(cost) %>% # choose threshold with minimum costs
+  transmute(threshold,Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res
+#Met two same min threshold problem
+if(length(res) != 1){
+  res <- res[1,]
+}
+nb_threshold = res$threshold	
+nb_acc = res$Accuracy
+nb_tpr = res$TPR
+nb_fpr = res$FPR
+nb_pre = res$PRE
+```
+
+
+## LDA
+There is no tuneable hyper-parameter in LDA. So, we just get the performance of training data by cross-validation and holdout data by model fitted with all training data.
+```{r}
+pred = numeric(nrow(data))
+for(v in unique(fold)) {
+  # set fit/eval split
+  ind_fit = which(fold != v)
+  ind_eval = which(fold == v)
+  #lda model fitting
+  fit = lda(Class~., data = data[ind_fit,])
+  pred[ind_eval] = as.numeric(as.character(predict(fit, data[ind_eval,])$class))
+}
+```
+
+```{r}
+eval_data = tibble( y = data$Class, pred = pred)
+# ROC curves
+ROC_data = yardstick::roc_curve(eval_data, truth = y, estimate = pred,
+                                event_level = "second")
+autoplot(ROC_data)
+
+lda_cv_AUROC = yardstick::roc_auc_vec(data$Class, as.numeric(pred), event_level = "second")
+perf_thres = map_df(thres, ~get_conf(., y=data$Class, p_hat = pred)) %>%
+  mutate(cost = FN*5 + FP*1)
+
+res <- perf_thres %>%
+  slice_min(cost) %>% # choose threshold with minimum costs
+  transmute(threshold,Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res
+#Met two same min threshold problem
+if(length(res) != 1){
+  res <- res[1,]
+}
+lda_cv_threshold = res$threshold	
+lda_cv_acc = res$Accuracy
+lda_cv_tpr = res$TPR
+lda_cv_fpr = res$FPR
+lda_cv_pre = res$PRE
+```
+
+Holdout data performance
+```{r}
+pred = numeric(nrow(holdout_data))
+
+fit = lda(Class~., data = data)
+pred = as.numeric(as.character(predict(fit, holdout_data)$class))
+```
+```{r}
+eval_data = tibble( y = holdout_data$bluetarp, pred = pred)
+# ROC curves
+ROC_data = yardstick::roc_curve(eval_data, truth = y, estimate = pred,
+                                event_level = "second")
+autoplot(ROC_data)
+
+lda_AUROC = yardstick::roc_auc_vec(holdout_data$bluetarp, as.numeric(pred), event_level = "second")
+perf_thres = map_df(thres, ~get_conf(., y=holdout_data$bluetarp, p_hat = pred)) %>%
+  mutate(cost = FN*5 + FP*1)
+
+res <- perf_thres %>%
+  slice_min(cost) %>% # choose threshold with minimum costs
+  transmute(threshold,Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res
+#Met two same min threshold problem
+if(length(res) != 1){
+  res <- res[1,]
+}
+lda_threshold = res$threshold	
+lda_acc = res$Accuracy
+lda_tpr = res$TPR
+lda_fpr = res$FPR
+lda_pre = res$PRE
+```
+
+
+## QDA
+There is no tuneable hyper-parameter in QDA as well. So, we just get the performance of training data by cross-validation and holdout data by model fitted with all training data.
+
+Cross-validation performance
+```{r}
+pred = numeric(nrow(data))
+for(v in unique(fold)) {
+  # set fit/eval split
+  ind_fit = which(fold != v)
+  ind_eval = which(fold == v)
+  #qda model fitting
+  fit = qda(Class~., data = data[ind_fit,])
+  pred[ind_eval] = as.numeric(as.character(predict(fit, data[ind_eval,])$class))
+}
+```
+
+```{r}
+eval_data = tibble( y = data$Class, pred = pred)
+# ROC curves
+ROC_data = yardstick::roc_curve(eval_data, truth = y, estimate = pred,
+                                event_level = "second")
+autoplot(ROC_data)
+
+qda_cv_AUROC = yardstick::roc_auc_vec(data$Class, as.numeric(pred), event_level = "second")
+perf_thres = map_df(thres, ~get_conf(., y=data$Class, p_hat = pred)) %>%
+  mutate(cost = FN*5 + FP*1)
+
+res <- perf_thres %>%
+  slice_min(cost) %>% # choose threshold with minimum costs
+  transmute(threshold,Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res
+#Met two same min threshold problem
+if(length(res) != 1){
+  res <- res[1,]
+}
+qda_cv_threshold = res$threshold	
+qda_cv_acc = res$Accuracy
+qda_cv_tpr = res$TPR
+qda_cv_fpr = res$FPR
+qda_cv_pre = res$PRE
+```
+
+Holdout data performance
+```{r}
+pred = numeric(nrow(holdout_data))
+
+fit = qda(Class~., data = data)
+pred = as.numeric(as.character(predict(fit, holdout_data)$class))
+
+eval_data = tibble( y = holdout_data$bluetarp, pred = pred)
+# ROC curves
+ROC_data = yardstick::roc_curve(eval_data, truth = y, estimate = pred,
+                                event_level = "second")
+autoplot(ROC_data)
+
+qda_AUROC = yardstick::roc_auc_vec(holdout_data$bluetarp, as.numeric(pred), event_level = "second")
+perf_thres = map_df(thres, ~get_conf(., y=holdout_data$bluetarp, p_hat = pred)) %>%
+  mutate(cost = FN*5 + FP*1)
+
+res <- perf_thres %>%
+  slice_min(cost) %>% # choose threshold with minimum costs
+  transmute(threshold,Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res
+#Met two same min threshold problem
+if(length(res) != 1){
+  res <- res[1,]
+}
+qda_threshold = res$threshold	
+qda_acc = res$Accuracy
+qda_tpr = res$TPR
+qda_fpr = res$FPR
+qda_pre = res$PRE
+```
+
+## Random Forest
+For random forest, I choose mtry as tuning parameter. I set ntree = 200 to save the fitting time. Because we only have 3 variables, I will just use mtry = [1,3].
+```{r}
+#-- Settings
+#Tuning mtry
+#We pre-define ntree to 200.
+ntree_max = 200             # maximum number of trees in forest
+mtry_seq = seq(1, 3, by=1)  # grid of tuning parameters
+
+perf = tibble()
+for(k in 1:10) {
+  #-- Set training/test data for fold k
+  test = which(fold == k) # indices of holdout/validation data
+  train = which(fold != k) # indices of fitting/training data
+  n.val = length(test) # number of observations in validation
+  
+  for(i in 1:length(mtry_seq)) {
+    set.seed(1)                     
+    rf = randomForest(Class~., data=data[train,], 
+                      mtry=mtry_seq[i], ntree=ntree_max)
+    
+    #: estimate probability in hold out set
+    p_hat = predict(rf, data[test,], type = "prob")
+    #: evaluate performance
+    log_loss = yardstick::mn_log_loss_vec(data$Class[test], as.numeric(p_hat[,2]), event_level = "second")
+    AUROC = yardstick::roc_auc_vec(data$Class[test], as.numeric(p_hat[,2]), event_level = "second")
+
+    out = tibble(log_loss, AUROC) %>% 
+      mutate(fold = k, tuning = i, n.val, mtry = mtry_seq[i], 
+           ntree = ntree_max, 
+           errorrate = rf$err.rate[ntree_max])
+    
+    perf = bind_rows(perf, out)
+  }
+}
+```
+
+### Tuning Parameters
+Cross-validation performance 
+So, mtry = 1 has the least log_loss and largest avg_AUROC.
+```{r}
+perf
+(avg_perf = perf %>%
+group_by(tuning) %>%
+summarize(
+avg_log_loss = mean(log_loss),
+avg_AUROC = mean(AUROC),
+sd_log_loss = sd(log_loss),
+sd_AUROC = sd(AUROC)
+) %>%
+arrange(avg_log_loss, -avg_AUROC))
+
+
+pred = numeric(nrow(data))
+for(v in unique(fold)) {
+  # set fit/eval split
+  ind_fit = which(fold != v)
+  ind_eval = which(fold == v)
+  fit = randomForest(Class~., data[ind_fit,], mtry=1, ntree=ntree_max)
+  # estimate probability in hold out set
+  pred[ind_eval] = predict(fit, data[ind_eval,], type = "prob")[,2]
+}
+eval_data = tibble(
+  y = data$Class,
+  pred = pred,
+  yhat = ifelse(pred > .50, 1, 0) # hard classification
+)
+# ROC curves
+ROC_data = yardstick::roc_curve(eval_data,
+  truth = y,
+  estimate = pred,
+  event_level = "second")
+autoplot(ROC_data)
+rf_cv_AUROC = yardstick::roc_auc_vec(data$Class, as.numeric(pred), event_level = "second")
+
+
+#parameter importance shows the importance of predictors
+fit$importance
+```
+We can see 'Blue' variable has the greatest importance. Professor also mentioned this in class that we can only see whether Blue is the greatest or not.
+
+Threshold selection
+```{r}
+perf_thres = map_df(thres, ~get_conf(., y=data$Class, p_hat = pred)) %>% mutate(cost = FN*5 + FP*1)
+
+res <- perf_thres %>%
+slice_min(cost) %>% # choose threshold with minimum costs
+transmute(threshold,
+Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res
+#Met two same min threshold problem
+if(length(res) != 1){
+  res <- res[1,]
+}
+rf_cv_threshold = res$threshold	
+rf_cv_acc = res$Accuracy
+rf_cv_tpr = res$TPR
+rf_cv_fpr = res$FPR
+rf_cv_pre = res$PRE
+```
+Holdout data performance
+```{r}
+#Evaluate performance of hold-out data by model fit by all training data.
+pred = numeric(nrow(holdout_data))
+
+fit = randomForest(Class~., data, mtry=1, ntree=ntree_max)
+# estimate probability in hold out set
+pred = predict(fit, holdout_data, type = "prob")[,2]
+
+eval_data = tibble(
+  y = holdout_data$bluetarp,
+  pred = pred,
+  yhat = ifelse(pred > .50, 1, 0) # hard classification
+)
+# ROC curves
+ROC_data = yardstick::roc_curve(eval_data,
+  truth = y,
+  estimate = pred,
+  event_level = "second")
+autoplot(ROC_data)
+rf_AUROC = yardstick::roc_auc_vec(holdout_data$bluetarp, as.numeric(pred), event_level = "second")
+```
+
+Threshold selection
+```{r}
+perf_thres = map_df(thres, ~get_conf(., y=holdout_data$bluetarp, p_hat = pred)) %>% mutate(cost = FN*5 + FP*1)
+
+res <- perf_thres %>%
+slice_min(cost) %>% # choose threshold with minimum costs
+transmute(threshold,
+Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res
+#Met two same min threshold problem
+if(length(res) != 1){
+  res <- res[1,]
+}
+rf_threshold = res$threshold	
+rf_acc = res$Accuracy
+rf_tpr = res$TPR
+rf_fpr = res$FPR
+rf_pre = res$PRE
+```
+
+## Boosted Trees
+For boosted trees, I choose n.tree to tune, this is integer specifying the total number of trees to fit. This is equivalent to the number of iterations and the number of basis functions in the additive expansion.
+```{r}
+#
+trees =seq(500, 2000, by=500)
+
+perf2 = tibble()
+
+for(k in 1:3) { #Only use three fold for saving calculation time.
+  #-- Set training/test data for fold k
+  test = which(fold == k) # indices of holdout/validation data
+  train = which(fold != k) # indices of fitting/training data
+  n.val = length(test) # number of observations in validation
+  
+  for(i in trees) {
+    set.seed(1)                     
+    gbm1 <- gbm(Class ~ ., data = data[train, ], distribution = "gaussian", cv.folds = 5, n.trees = i, shrinkage = 0.1, interaction.depth = 1)
+    
+    best.iter <- gbm.perf(gbm1, method = "cv")
+    p_hat = predict(gbm1, data[test,], n.trees = best.iter)
+    #: evaluate performance
+    log_loss = yardstick::mn_log_loss_vec(data$Class[test], as.numeric(p_hat[]), event_level = "second")
+    AUROC = yardstick::roc_auc_vec(data$Class[test], as.numeric(p_hat[]), event_level = "second")
+
+    out = tibble(log_loss, AUROC) %>% 
+      mutate(fold = k, tuning = i, n.val)
+    perf2 = bind_rows(perf2, out)
+  }
+}
+perf2
+```
+
+### Tuning Parameters
+Performance of cross-validation in training data.
+n.trees=2000 is the best hyper-parameter.
+```{r}
+(avg_perf = perf2 %>%
+group_by(tuning) %>%
+summarize(
+avg_log_loss = mean(log_loss),
+avg_AUROC = mean(AUROC),
+sd_log_loss = sd(log_loss),
+sd_AUROC = sd(AUROC)
+) %>%
+arrange(avg_log_loss, -avg_AUROC))
+
+
+#We can see that n.trees = 2000 has the best performance
+pred2 = numeric(nrow(data))
+for(v in unique(fold)) {
+  # set fit/eval split
+  ind_fit = which(fold != v)
+  ind_eval = which(fold == v)
+  fit2 <- gbm(Class ~ ., data = data[ind_fit, ],distribution = "gaussian", cv.folds = 5, n.trees = 2000, shrinkage = 0.1, interaction.depth = 1)
+  best.iter <- gbm.perf(fit2, method = "cv")
+  # estimate probability in hold out set
+  pred2[ind_eval] = predict(fit2, data[ind_eval,], n.trees = best.iter)
+}
+eval_data = tibble(
+  y = data$Class,
+  pred2 = pred2,
+)
+
+# ROC curves
+ROC_data = yardstick::roc_curve(eval_data,
+  truth = y,
+  estimate = pred2,
+  event_level = "second")
+autoplot(ROC_data)
+bt_cv_AUROC = yardstick::roc_auc_vec(data$Class, as.numeric(pred2), event_level = "second")
+```
+
+```{r}
+#For threshold, the outcome of gbm is in a range of 1 to 1.5. So I pick value in between this range.
+thres2 = seq(1.0, 1.50, length=50)
+perf_thres2 = map_df(thres2, ~get_conf(., y=data$Class, p_hat = pred2)) %>% mutate(cost = FN*5 + FP*1)
+
+res2 <- perf_thres2 %>%
+slice_min(cost) %>% # choose threshold with minimum costs
+transmute(threshold,
+Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res2
+bt_cv_threshold = res2$threshold	
+bt_cv_acc = res2$Accuracy
+bt_cv_tpr = res2$TPR
+bt_cv_fpr = res2$FPR
+bt_cv_pre = res2$PRE
+```
+
+Holdout data performance
+```{r}
+pred2 = numeric(nrow(holdout_data))
+
+fit2 <- gbm(Class ~ ., data = data ,distribution = "gaussian", cv.folds = 5, n.trees = 2000, shrinkage = 0.1, interaction.depth = 1)
+best.iter <- gbm.perf(fit2, method = "cv")
+# estimate probability in hold out set
+pred2 = predict(fit2, holdout_data, n.trees = best.iter)
+  
+eval_data = tibble(
+  y = holdout_data$bluetarp,
+  pred2 = pred2,
+)
+
+# ROC curves
+ROC_data = yardstick::roc_curve(eval_data,
+  truth = y,
+  estimate = pred2,
+  event_level = "second")
+autoplot(ROC_data)
+bt_AUROC = yardstick::roc_auc_vec(holdout_data$bluetarp, as.numeric(pred2), event_level = "second")
+```
+
+```{r}
+
+perf_thres2 = map_df(thres2, ~get_conf(., y=holdout_data$bluetarp, p_hat = pred2)) %>% mutate(cost = FN*5 + FP*1)
+
+res2 <- perf_thres2 %>%
+slice_min(cost) %>% # choose threshold with minimum costs
+transmute(threshold,
+Accuracy = (TP + TN)/(TP + FP + FN + TN),
+TPR = TP / (TP + FN),
+FPR = FP / (FP + TN),
+PRE = TP / (TP + FP))
+res2
+bt_threshold = res2$threshold	
+bt_acc = res2$Accuracy
+bt_tpr = res2$TPR
+bt_fpr = res2$FPR
+bt_pre = res2$PRE
+```
+
+
+## Threshold Selection
+
+Already discussed above in logistic part.
+
+# Results (Hold-Out)
+
+Displayed in end of each model section
+
+## Cross-Validation Performance Table
+We take average for every result in cross-validation. This table represents the result of best hyper-parameter model by cross-validation in training dataset.
+```{r}
+library(knitr)
+performance_table = tibble(Model=c("Log Reg", "KNN", "Penalized Log Reg", "SVM", "Naive Bayes", "LDA", "QDA", "Random Forest", "Boosted Tree"), Tuning=c("None", "k=15", "alpha=1, lambda=2.229459e-05","gamma=2, cost=400", "None", "None", "None", "mtry=1, ntree=200", "n.trees=2000"), AUROC= c(lg_cv_AUROC, knn_cv_AUROC, eln_cv_AUROC, svm_cv_AUROC, nb_cv_AUROC, lda_cv_AUROC, qda_cv_AUROC, rf_cv_AUROC, bt_cv_AUROC), Threshold=c(lg_cv_threshold, knn_cv_threshold, eln_cv_threshold, svm_cv_threshold, nb_cv_threshold, lda_cv_threshold, qda_cv_threshold, rf_cv_threshold, bt_cv_threshold), Accuracy=c(lg_cv_acc, knn_cv_acc, eln_cv_acc, svm_cv_acc, nb_cv_acc, lda_cv_acc, qda_cv_acc, rf_cv_acc, bt_cv_acc ), TPR=c(lg_cv_tpr,knn_cv_tpr,eln_cv_tpr,svm_cv_tpr, nb_cv_tpr, lda_cv_tpr, qda_cv_tpr, rf_cv_tpr, bt_cv_tpr), FPR=c(lg_cv_fpr, knn_cv_fpr,eln_cv_fpr,svm_cv_fpr, nb_cv_fpr, lda_cv_fpr, qda_cv_fpr, rf_cv_fpr, bt_cv_fpr), Precision=c(lg_cv_pre, knn_cv_pre, eln_cv_pre, svm_cv_pre, nb_cv_pre, lda_cv_pre, qda_cv_pre, rf_cv_pre, bt_cv_pre))
+knitr::kable(performance_table, "pipe")
+```
+
+
+## Hold-out Performance Table
+
+This table represents the result of best model fitted by training dataset, and evaluate with hold-out dataset.
+```{r}
+library(knitr)
+performance_table = tibble(Model=c("Log Reg", "KNN", "Penalized Log Reg", "SVM",  "Naive Bayes", "LDA", "QDA", "Random Forest", "Boosted Tree"), Tuning=c("None", "k=15", "alpha=1, lambda=2.229459e-05","gamma=2, cost=400", "None", "None", "None", "mtry=1, ntree=200", "n.trees=2000"), AUROC=c(lg_AUROC, knn_AUROC, eln_AUROC, svm_AUROC, nb_AUROC, lda_AUROC, qda_AUROC, rf_AUROC, bt_AUROC), Threshold=c(lg_threshold, knn_threshold, eln_threshold, svm_threshold, nb_threshold, lda_threshold, qda_threshold, rf_threshold, bt_threshold), Accuracy=c(lg_acc, knn_acc, eln_acc, svm_acc, nb_acc,lda_acc, qda_acc,rf_acc, bt_acc), TPR=c(lg_tpr,knn_tpr,eln_tpr,svm_tpr,nb_tpr, lda_tpr, qda_tpr, rf_tpr, bt_tpr), FPR=c(lg_fpr, knn_fpr,eln_fpr,svm_fpr, nb_fpr, lda_fpr, qda_fpr, rf_fpr, bt_fpr), Precision=c(lg_pre, knn_pre, eln_pre, svm_pre, nb_pre, lda_pre, qda_pre, rf_pre, bt_pre))
+knitr::kable(performance_table, "pipe")
+```
+
+
+# Final Conclusions
+
+### Conclusion \#1 
+From the result tables, I think the best performing model in both cross-validation and holdout data is random forest model. Because it has top accuracy and AUROC in both performance tables. More importantly, it also maintains a high tpr rate in holdout data. Comprehensibly saying, I think random forest is the best model in our experiment. 
+
+### Conclusion \#2
+Why random forest is the best when we have other models have better performance metrics compared to random forest? I want to dissucss in two points.
+
+First, I will our model have the best performance in real case. And in our disaster situation, like I mentioned in Threshold Selection part, we focus more on false negative because we do not want to miss any possible civilians. So, I wish to select the best model by tpr rate and accuracy rate.
+
+Second, I think random forest still have potential to improve. The tuning parameter I chose is mtry. And I set ntree=200 which could be larger than that.
+
+### Conclusion \#3
+My recommendation of model to use for detection blue tarps will random forest model. Like the point I mentioned above, we need to decrease of FN so we need a model has high TPR rate (recall rate). At the same time, the other models have disadvantages like logistic regression and knn are overfitting, SVM and boosted tree are complicated and time consuming to train a model. So, random forest will be a good choice for detecting image of bluetarp.
+
+### Conclusion \#4 
+From above tables, we can see most of models have a low precision rate in holdout data performance. I think this is because the unbalance in training and hold-out data. We have only 1-3% of data is blue tarp. Therefore, one false positive occur, it has big effect on the whole precision rate. Additive, in our threshold selection, we made false negative has more cost than false positive. It leads our model sacrifice more percision for a high recall(tpr). And for fpr, because it is calculated by fp/(fp+tn) and our tn(right non-bluetarp prediction) is large. It has a low number in both cv and holdout data performance.
+
+### Conclusion \#5
+Based on the performance result of cv-training and hold-out data from all these machine learning models, we can see that all models have a decrements of performance on accuracy and AUROC. Apparently it is the case of over-fitting. We have a better performance on training data but worse performance on testing data. It especially happens in logistic regression and knn with around 4% decrease in accuracy rate. It means that both these models are overfitting with high variance and low bias.
+
+### Conclusion \#6
+Personally, I think this project is very close to a real-world situation. We experienced an overall, integrated, and detailed project that also suits for real-scenario case. We have a deep understanding of what should we do in each step such as pre-processing data, EDA, tuning parameter, cross-validation and tons of details inside it. This final and integrated project contains most of model we learned in this semester. We fitted all these model in same data and compare their performances to pick the best one. I think this is how the real-world case works as well. After finished this project, I am more confident if I meet another data mining problem in future because of experience I learned from it.
